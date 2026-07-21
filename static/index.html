@@ -1,24 +1,113 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>MDL Texture Editor</title>
 <style>
-  html,body{margin:0;height:100%;font-family:sans-serif;background:#222;color:#ddd}
-  #bar{height:40px;display:flex;align-items:center;gap:12px;padding:0 12px;background:#111}
-  #split{display:flex;height:calc(100% - 40px)}
-  #left,#right{flex:1;position:relative;overflow:hidden;border-right:1px solid #000}
-  #left{display:flex;flex-direction:column}
-  #painttools{height:34px;display:flex;align-items:center;gap:10px;padding:0 10px;
-              background:#1a1a1a;font-size:12px}
-  #painttools input[type=range]{width:90px}
-  #paintwrap{flex:1;position:relative;overflow:auto;display:flex;
-             align-items:center;justify-content:center}
-  #paint{max-width:100%;max-height:100%;image-rendering:pixelated;
-         cursor:crosshair;touch-action:none;background:#000}
+  :root{
+    --bg:#0f1319; --bar:#0b0e13; --panel:#161b22; --head:#12161d;
+    --line:#242b36; --line-2:#2f3745;
+    --text:#e8ecf3; --muted:#8791a1; --faint:#5b6472;
+    --accent:#f2a53c; --accent-2:#ffbf63;
+    --accent-weak:rgba(242,165,60,.14); --accent-line:rgba(242,165,60,.55);
+    --focus:#6ea8fe; --danger:#ff5d5d;
+    --ui:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{display:grid;grid-template-rows:auto 1fr;height:100%;overflow:hidden;
+       background:var(--bg);color:var(--text);font-family:var(--ui);
+       -webkit-font-smoothing:antialiased}
+
+  /* toolbar */
+  #bar{display:flex;align-items:center;gap:10px;padding:10px 14px;
+       background:var(--bar);border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:9px}
+  .brand-badge{font:700 12px/1 var(--mono);letter-spacing:.5px;color:var(--accent-2);
+       background:var(--accent-weak);border:1px solid var(--accent-line);
+       border-radius:6px;padding:5px 7px}
+  .brand-name{font:600 12.5px/1 var(--ui);letter-spacing:.3px}
+  .group{display:flex;align-items:center;gap:8px}
+  .group.grow{flex:1 1 300px;min-width:0}
+  .group.grow #path{flex:1 1 auto;min-width:0}
+  .divider{width:1px;align-self:stretch;background:var(--line);margin:2px 2px}
+
+  /* controls */
+  .btn{font:500 12.5px/1 var(--ui);letter-spacing:.2px;color:var(--text);
+       background:#1a2029;border:1px solid var(--line-2);border-radius:7px;
+       padding:8px 12px;cursor:pointer;white-space:nowrap;
+       transition:background .12s,border-color .12s,color .12s,box-shadow .12s}
+  .btn:hover{background:#212936;border-color:#3a4454}
+  .btn:active{transform:translateY(1px)}
+  .btn:disabled{opacity:.38;cursor:not-allowed}
+  .btn-icon{padding:8px 11px}
+  .btn-go{background:#1f2937;border-color:#33465f;color:#cfe0f5}
+  .btn-go:hover{background:#25303f;border-color:#42597a}
+  .toggle[aria-pressed="true"]{background:var(--accent-weak);border-color:var(--accent-line);
+       color:var(--accent-2);box-shadow:inset 0 0 12px rgba(242,165,60,.08)}
+  .btn-primary{color:#241a08;font-weight:650;border:1px solid #d98a1f;
+       background:linear-gradient(180deg,#f6b04e,#eb9a2c);
+       box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 2px 10px rgba(242,165,60,.18)}
+  .btn-primary:hover{background:linear-gradient(180deg,#ffbc5c,#f0a338)}
+
+  #path{font:13px/1 var(--mono);color:var(--text);background:#0a0d12;
+        border:1px solid var(--line-2);border-radius:7px;padding:9px 11px;min-width:200px}
+
+  /* split panes */
+  #split{display:grid;grid-template-columns:1fr 1fr;height:100%;min-height:0}
+  .pane{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--panel)}
+  #left{border-right:1px solid var(--line)}
+  .pane-head{display:flex;align-items:center;gap:12px;height:44px;padding:0 12px;
+       background:var(--head);border-bottom:1px solid var(--line)}
+  .pane-title{font:600 11px/1 var(--ui);letter-spacing:1.6px;text-transform:uppercase;
+       color:var(--faint)}
+  .tools{display:flex;align-items:center;gap:9px}
+  .tool-sep{width:1px;height:20px;background:var(--line-2)}
+  .editpath{margin-left:auto;font:11px/1 var(--mono);color:var(--muted);
+       white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:34ch}
+
+  /* color swatch + brush size */
+  .swatch{position:relative;width:32px;height:26px;border-radius:6px;overflow:hidden;
+       border:1px solid var(--line-2);display:inline-flex;flex:none}
+  .swatch input[type=color]{position:absolute;inset:-6px;width:calc(100% + 12px);
+       height:calc(100% + 12px);border:none;padding:0;background:none;cursor:pointer}
+  .size{display:inline-flex;align-items:center;gap:9px}
+  #brushsize{-webkit-appearance:none;appearance:none;height:4px;width:104px;
+       background:var(--line-2);border-radius:3px;cursor:pointer}
+  #brushsize::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;
+       border-radius:50%;background:var(--accent);border:2px solid #12161d;cursor:pointer}
+  #brushsize::-moz-range-thumb{width:14px;height:14px;border:2px solid #12161d;
+       border-radius:50%;background:var(--accent);cursor:pointer}
+  #brushval{font:11px/1 var(--mono);color:var(--muted);min-width:3ch;text-align:right}
+
+  /* skin editing surface */
+  #paintwrap{flex:1;min-height:0;overflow:auto;display:flex;
+       align-items:center;justify-content:center;padding:20px;
+       background:
+         linear-gradient(45deg,#0d1016 25%,transparent 25%,transparent 75%,#0d1016 75%),
+         linear-gradient(45deg,#0d1016 25%,#141922 25%,#141922 75%,#0d1016 75%);
+       background-size:22px 22px;background-position:0 0,11px 11px}
+  #paint{max-width:100%;max-height:100%;image-rendering:pixelated;cursor:crosshair;
+       touch-action:none;background:#000;
+       box-shadow:0 0 0 1px var(--line-2),0 10px 34px rgba(0,0,0,.55)}
+
+  /* model viewport */
+  #viewport{flex:1;min-height:0;position:relative}
   #canvas{width:100%;height:100%;display:block}
-  #msg{position:absolute;top:12px;left:12px;right:12px;padding:8px 12px;background:#7a1f1f;
-       color:#fff;border-radius:4px;font-size:13px;display:none;z-index:5}
+  #msg{position:absolute;top:14px;left:50%;transform:translateX(-50%);max-width:80%;
+       padding:10px 14px;background:#1c1116;color:#ffd9d9;
+       border:1px solid #47232a;border-left:3px solid var(--danger);border-radius:8px;
+       font:13px/1.4 var(--ui);display:none;z-index:5;box-shadow:0 6px 20px rgba(0,0,0,.45)}
+
+  :focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+  @media (max-width:820px){
+    #split{grid-template-columns:1fr;grid-template-rows:1fr 1fr}
+    #left{border-right:none;border-bottom:1px solid var(--line)}
+    .brand-name{display:none}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 <script type="importmap">
 { "imports": {
@@ -28,29 +117,55 @@
 </script>
 </head>
 <body>
-  <div id="bar">
-    <label>MDL path: <input id="path" value="samples/Paper2.MDL" size="40"></label>
-    <button id="browse">Browse…</button>
-    <button id="load">Load</button>
-    <button id="mode565">565 preview: OFF</button>
-    <button id="wire">Wireframe: OFF</button>
-    <button id="flipv">Flip V: OFF</button>
-    <button id="reveal">Reveal folder</button>
-    <button id="save">Save to .MDL</button>
-    <span id="editpath" style="font-size:12px;color:#9ab"></span>
-  </div>
-  <div id="split">
-    <div id="left">
-      <div id="painttools">
-        <label>color <input type="color" id="color" value="#ff2d55"></label>
-        <label>size <input type="range" id="brushsize" min="1" max="64" value="6"></label>
-        <button id="undo" title="Ctrl/Cmd+Z" disabled>Undo</button>
-        <button id="redo" title="Ctrl/Cmd+Y" disabled>Redo</button>
+  <header id="bar">
+    <div class="brand">
+      <span class="brand-badge">MDL</span>
+      <span class="brand-name">Texture Editor</span>
+    </div>
+    <div class="divider"></div>
+    <div class="group grow">
+      <input id="path" value="samples/Paper2.MDL" spellcheck="false" autocomplete="off"
+             aria-label="Model path">
+      <button id="browse" class="btn">Browse…</button>
+      <button id="load" class="btn btn-go">Load</button>
+    </div>
+    <div class="group">
+      <button id="mode565" class="btn toggle" aria-pressed="false">RGB 565</button>
+      <button id="wire" class="btn toggle" aria-pressed="false">Wireframe</button>
+      <button id="flipv" class="btn toggle" aria-pressed="false">Flip V</button>
+    </div>
+    <div class="divider"></div>
+    <div class="group">
+      <button id="reveal" class="btn">Reveal folder</button>
+      <button id="save" class="btn btn-primary">Save to .MDL</button>
+    </div>
+  </header>
+
+  <main id="split">
+    <section id="left" class="pane">
+      <div class="pane-head">
+        <span class="pane-title">Skin</span>
+        <div class="tools">
+          <label class="swatch" title="Brush color"><input type="color" id="color" value="#ff2d55"></label>
+          <label class="size" title="Brush size">
+            <input type="range" id="brushsize" min="1" max="64" value="6">
+            <output id="brushval">6</output>
+          </label>
+          <span class="tool-sep"></span>
+          <button id="undo" class="btn btn-icon" title="Undo (Ctrl/Cmd+Z)" disabled>Undo</button>
+          <button id="redo" class="btn btn-icon" title="Redo (Ctrl/Cmd+Y)" disabled>Redo</button>
+        </div>
+        <span id="editpath" class="editpath"></span>
       </div>
       <div id="paintwrap"><canvas id="paint"></canvas></div>
-    </div>
-    <div id="right"><div id="msg"></div><canvas id="canvas"></canvas></div>
-  </div>
+    </section>
+
+    <section id="right" class="pane">
+      <div class="pane-head"><span class="pane-title">Model</span></div>
+      <div id="viewport"><div id="msg"></div><canvas id="canvas"></canvas></div>
+    </section>
+  </main>
+
   <script type="module" src="/static/app.js"></script>
 </body>
 </html>

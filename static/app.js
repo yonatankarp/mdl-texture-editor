@@ -182,7 +182,10 @@ paint.addEventListener("pointercancel", endStroke);
 
 // toolbar + keyboard
 document.getElementById("color").addEventListener("input", (e) => { brushColor = e.target.value; });
-document.getElementById("brushsize").addEventListener("input", (e) => { brushSize = +e.target.value; });
+document.getElementById("brushsize").addEventListener("input", (e) => {
+  brushSize = +e.target.value;
+  document.getElementById("brushval").textContent = brushSize;
+});
 document.getElementById("undo").addEventListener("click", undo);
 document.getElementById("redo").addEventListener("click", redo);
 window.addEventListener("keydown", (e) => {
@@ -267,7 +270,7 @@ async function load(path) {
   if (flipV) {
     for (let i = 1; i < g.uvs.length; i += 2) g.uvs[i] = 1 - g.uvs[i];
   }
-  document.getElementById("flipv").textContent = "Flip V: " + (flipV ? "ON" : "OFF");
+  document.getElementById("flipv").setAttribute("aria-pressed", String(flipV));
   currentPath = path;
 
   const geo = new THREE.BufferGeometry();
@@ -364,12 +367,12 @@ document.getElementById("browse").onclick = async () => {
 document.getElementById("mode565").onclick = (e) => {
   mode565 = !mode565;
   if (mesh) mesh.material = mode565 ? mat565 : fullMat;
-  e.target.textContent = "565 preview: " + (mode565 ? "ON" : "OFF");
+  e.currentTarget.setAttribute("aria-pressed", String(mode565));
 };
 document.getElementById("wire").onclick = (e) => {
   wire = !wire;
   applyWire();
-  e.target.textContent = "Wireframe: " + (wire ? "ON" : "OFF");
+  e.currentTarget.setAttribute("aria-pressed", String(wire));
 };
 
 // Flip V: invert the model's texture V instantly and persist per model.
@@ -379,7 +382,7 @@ document.getElementById("flipv").onclick = async (e) => {
   const uv = mesh.geometry.getAttribute("uv");
   for (let i = 0; i < uv.count; i++) uv.setY(i, 1 - uv.getY(i));
   uv.needsUpdate = true;
-  e.target.textContent = "Flip V: " + (flipV ? "ON" : "OFF");
+  e.currentTarget.setAttribute("aria-pressed", String(flipV));
   try {
     await fetch("/api/orientation", {
       method: "POST",
