@@ -83,11 +83,20 @@ function resize() {
 }
 window.addEventListener("resize", resize);
 
+// Default camera azimuth, in degrees measured from world +Z toward +X. These
+// models face world +X (Quake forward), and the camera used to sit on +Z, so
+// every model loaded in profile ("facing right"). ~110 turns the camera onto
+// the model's front and a bit past it for a flattering 3/4 view. The user can
+// still orbit freely afterward.
+const DEFAULT_AZIMUTH_DEG = 110;
+
 function frameCamera(geometry) {
   geometry.computeBoundingSphere();
   const s = geometry.boundingSphere;
   controls.target.copy(s.center);
-  camera.position.copy(s.center).add(new THREE.Vector3(0, 0, s.radius * 2.5));
+  const az = (DEFAULT_AZIMUTH_DEG * Math.PI) / 180;
+  const dir = new THREE.Vector3(Math.sin(az), 0, Math.cos(az));
+  camera.position.copy(s.center).addScaledVector(dir, s.radius * 2.5);
   camera.near = s.radius / 100;
   camera.far = s.radius * 100;
   camera.updateProjectionMatrix();

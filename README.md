@@ -1,10 +1,14 @@
 # MDL Texture Editor
 
+[![CI](https://github.com/yonatankarp/mdl-texture-editor/actions/workflows/ci.yml/badge.svg)](https://github.com/yonatankarp/mdl-texture-editor/actions/workflows/ci.yml)
+
 A local web tool for previewing and improving the textures of GameStudio A5 /
 Quake-lineage `.MDL` models. The left pane shows the model's skin as a flat
 PNG; the right pane renders the textured 3D model in real time. Edit the skin
 in your usual image editor and the model re-textures live, so you can see how a
 change looks on the mesh as you make it.
+
+![The editor: the model's skin PNG on the left, the live textured 3D render on the right](docs/screenshots/split-view.jpg)
 
 It reads three model formats: **IDPO** (Quake1-style), **MDL5**, and **MDL3**
 (both A5). MDL4 and MDL2 are not supported.
@@ -43,6 +47,8 @@ A5 engine stores most textures, so you can preview the in-game color depth
 instead of the full-color PNG.
 
 `Wireframe` overlays the mesh edges.
+
+![The same model with the wireframe overlay enabled](docs/screenshots/wireframe.jpg)
 
 `Flip V` inverts the model's vertical texture mapping and remembers the choice
 per model (see below).
