@@ -523,8 +523,14 @@ async function doReset() {
     })).json();
     if (myLoad !== loadToken) return; // superseded by a newer load
     if (r.skin) {
-      editSkin = r.skin;
       editDir = r.dir;
+      skinPaths = r.skins && r.skins.length ? r.skins : [r.skin];
+      const nextIndex = Math.min(currentSkinIndex, skinPaths.length - 1);
+      populateSkinSelector(r.numskins || skinPaths.length);
+      currentSkinIndex = nextIndex;
+      skinsel.value = String(currentSkinIndex);
+      editSkin = skinPaths[currentSkinIndex];
+      subscribeWatch(editSkin);
       // loadSkinIntoCanvas resizes, redraws, rebuilds both textures and clears
       // undo/redo. The on-disk skin is already pristine, so no skin-write here.
       loadSkinIntoCanvas("/api/pngskin?file=" + encodeURIComponent(editSkin) + "&_=" + Date.now());
