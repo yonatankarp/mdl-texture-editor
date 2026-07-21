@@ -17,7 +17,7 @@ Usage:
   python mdl_tool.py import  <Model.MDL> <in_dir> [--out <Model.MDL>]
   python mdl_tool.py info    <Model.MDL>
 """
-import struct, os, sys, json, hashlib
+import struct, os, sys, json, hashlib, re
 from PIL import Image
 
 HDR = 84
@@ -182,14 +182,25 @@ def do_import(mdl, indir, out=None):
     b = open(src, "rb").read()
     fmt, skins, after, numverts, numtris, numframes = parse_skins(b)
     old_w, old_h = skins[0]["w"], skins[0]["h"]
-    numskins = len(skins)
+
+    picks = []
+    for name in os.listdir(indir):
+        m = re.match(r"^skin(\d+)\.png$", name, flags=re.IGNORECASE)
+        if m:
+            picks.append((int(m.group(1)), os.path.join(indir, name)))
+    picks.sort(key=lambda x: x[0])
+    if not picks:
+        raise SystemExit(f"no skin*.png files found in {indir}")
+    # Require contiguous numbering to avoid silent ordering mistakes.
+    expected = list(range(len(picks)))
+    got = [n for n, _p in picks]
+    if got != expected:
+        raise SystemExit(f"skin files must be contiguous skin0..skinN; found indices {got}")
+    numskins = len(picks)
 
     newskins = []
     nw = nh = None
-    for i in range(numskins):
-        p = os.path.join(indir, f"skin{i}.png")
-        if not os.path.exists(p):
-            raise SystemExit(f"missing {p}")
+    for i, p in picks:
         data, w, h = enc565(Image.open(p))
         if nw is None:
             nw, nh = w, h
@@ -202,6 +213,7 @@ def do_import(mdl, indir, out=None):
     rest = b[after + uv_len:]
 
     outb = bytearray(b[:HDR])
+    struct.pack_into("<i", outb, 48, numskins)
     if fmt != "MDL5":
         struct.pack_into("<2i", outb, 52, nw, nh)
 

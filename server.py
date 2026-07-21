@@ -1,7 +1,9 @@
 import base64, hashlib, io, json, os, sys, time, subprocess
 from flask import Flask, request, jsonify, send_file, abort, send_from_directory, Response
+from PIL import Image
 import mdl_tool
 from mdl_geometry import parse_geometry
+from mdl_paper import write_paper_idpo_from_image
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 # Per-model orientation overrides, keyed by absolute path. The decoder's
@@ -56,6 +58,34 @@ def _skin_image(mdl_path, index):
     sk = skins[index]
     return mdl_tool.dec_skin(b[sk["doff"]:sk["doff"] + sk["dlen"]], sk["w"], sk["h"], sk["t"])
 
+
+def _skin_files(workdir):
+    pairs = []
+    for name in os.listdir(workdir):
+        if not (name.lower().startswith("skin") and name.lower().endswith(".png")):
+            continue
+        mid = name[4:-4]
+        if mid.isdigit():
+            pairs.append((int(mid), name))
+    pairs.sort(key=lambda x: x[0])
+    return [name for _idx, name in pairs]
+
+
+def _skin_rel_list(root, workdir):
+    return [os.path.relpath(os.path.join(workdir, n), root) for n in _skin_files(workdir)]
+
+
+def _renumber_skin_files(workdir):
+    names = _skin_files(workdir)
+    for i, name in enumerate(names):
+        src = os.path.join(workdir, name)
+        tmp = os.path.join(workdir, f"__tmp_skin_{i}.png")
+        os.replace(src, tmp)
+    for i in range(len(names)):
+        tmp = os.path.join(workdir, f"__tmp_skin_{i}.png")
+        dst = os.path.join(workdir, f"skin{i}.png")
+        os.replace(tmp, dst)
+
 def create_app(root):
     app = Flask(__name__, static_folder=None)
     # Absolute backup dir so mdl_tool's extract/import don't depend on the
@@ -65,8 +95,9 @@ def create_app(root):
     @app.get("/api/model")
     def model():
         full = _resolve(root, request.args["path"])
+        include_frames = request.args.get("includeFrames", "0") in ("1", "true", "True")
         try:
-            return jsonify(parse_geometry(full))
+            return jsonify(parse_geometry(full, include_frames=include_frames))
         except ValueError as e:
             # Unsupported format (MDL2/MDL4) or a model this parser can't
             # decode (degenerate/placeholder). Report cleanly so the UI can
@@ -106,13 +137,22 @@ def create_app(root):
         workdir = _workdir(root, full)
         skin0 = os.path.join(workdir, "skin0.png")
         if os.path.exists(skin0) and not body.get("force"):
-            return jsonify({"skin": os.path.relpath(skin0, root), "dir": workdir, "reused": True})
+            skins = _skin_rel_list(root, workdir)
+            return jsonify({"skin": os.path.relpath(skin0, root), "skins": skins, "dir": workdir, "reused": True})
         try:
             mdl_tool.extract(full, workdir)
         except (SystemExit, Exception) as e:
             return jsonify({"error": str(e)}), 400
         skin = os.path.relpath(os.path.join(workdir, "skin0.png"), root)
-        return jsonify({"skin": skin, "dir": workdir})
+        return jsonify({"skin": skin, "skins": _skin_rel_list(root, workdir), "dir": workdir})
+
+    @app.get("/api/skins")
+    def skins():
+        full = _resolve(root, request.args["path"])
+        workdir = _workdir(root, full)
+        if not os.path.isdir(workdir):
+            abort(400, "no extracted skin; load the model first")
+        return jsonify({"skins": _skin_rel_list(root, workdir), "dir": workdir})
 
     @app.post("/api/skin-write")
     def skin_write():
@@ -129,6 +169,110 @@ def create_app(root):
         with open(full, "wb") as f:
             f.write(base64.b64decode(raw))
         return jsonify({"ok": True})
+
+    @app.post("/api/skin-add")
+    def skin_add():
+        body = request.get_json(force=True)
+        full = _resolve(root, body["path"])
+        workdir = _workdir(root, full)
+        if not os.path.isdir(workdir):
+            abort(400, "no extracted skin; load the model first")
+        skins = _skin_files(workdir)
+        if not skins:
+            abort(400, "no working skins found")
+        src_idx = int(body.get("fromIndex", len(skins) - 1))
+        src_idx = max(0, min(src_idx, len(skins) - 1))
+        src = os.path.join(workdir, skins[src_idx])
+        dst = os.path.join(workdir, f"skin{len(skins)}.png")
+        Image.open(src).save(dst)
+        rel = _skin_rel_list(root, workdir)
+        return jsonify({"ok": True, "skins": rel, "index": len(rel) - 1})
+
+    @app.post("/api/skin-remove")
+    def skin_remove():
+        body = request.get_json(force=True)
+        full = _resolve(root, body["path"])
+        workdir = _workdir(root, full)
+        if not os.path.isdir(workdir):
+            abort(400, "no extracted skin; load the model first")
+        names = _skin_files(workdir)
+        if len(names) <= 1:
+            abort(400, "cannot remove the last skin")
+        idx = int(body.get("index", len(names) - 1))
+        idx = max(0, min(idx, len(names) - 1))
+        os.remove(os.path.join(workdir, names[idx]))
+        _renumber_skin_files(workdir)
+        rel = _skin_rel_list(root, workdir)
+        return jsonify({"ok": True, "skins": rel, "index": min(idx, len(rel) - 1)})
+
+    @app.post("/api/upscale")
+    def upscale():
+        # Upscale the working skin in place, then let /api/watch hot-reload it.
+        body = request.get_json(force=True)
+        full = _resolve(root, body["path"])
+        workdir = _workdir(root, full)
+        skin0 = os.path.join(workdir, "skin0.png")
+        if not os.path.isfile(skin0):
+            abort(400, "no extracted skin; load the model first")
+        factor = max(1, int(body.get("factor", 2)))
+        method = str(body.get("method", "nearest")).lower()
+        if method == "lanczos":
+            filt = Image.Resampling.LANCZOS
+        elif method in ("bilinear", "linear"):
+            filt = Image.Resampling.BILINEAR
+        else:
+            filt = Image.Resampling.NEAREST
+        img = Image.open(skin0).convert("RGB")
+        out = img.resize((img.width * factor, img.height * factor), filt)
+        out.save(skin0)
+        return jsonify({"ok": True, "w": out.width, "h": out.height, "factor": factor, "method": method})
+
+    @app.post("/api/paper-from-image")
+    def paper_from_image():
+        # Build a flat cutout IDPO model from an RGBA source image.
+        body = request.get_json(force=True)
+        out_path = body.get("outPath")
+        if not out_path:
+            abort(400, "missing outPath")
+        out_abs = os.path.abspath(out_path if os.path.isabs(out_path) else os.path.join(root, out_path))
+        image_path = None
+        tmp = None
+        if body.get("imagePath"):
+            image_path = os.path.abspath(body["imagePath"] if os.path.isabs(body["imagePath"]) else os.path.join(root, body["imagePath"]))
+        elif body.get("imageData"):
+            raw = body["imageData"].split(",", 1)[-1]
+            tmp = out_abs + ".source.png"
+            os.makedirs(os.path.dirname(out_abs) or ".", exist_ok=True)
+            with open(tmp, "wb") as f:
+                f.write(base64.b64decode(raw))
+            image_path = tmp
+        else:
+            abort(400, "missing imagePath or imageData")
+        target_height_model = body.get("targetHeightModelPath")
+        if target_height_model:
+            target_height_model = _resolve(root, target_height_model)
+        anim_source_model = body.get("animSourceModelPath")
+        if anim_source_model:
+            anim_source_model = _resolve(root, anim_source_model)
+        try:
+            info = write_paper_idpo_from_image(
+                image_path=image_path,
+                out_path=out_abs,
+                grid=max(1, int(body.get("grid", 8))),
+                alpha_threshold=max(0, min(255, int(body.get("alphaThreshold", 10)))),
+                pixel_scale=float(body.get("pixelScale", 1.0)),
+                target_height_model_path=target_height_model,
+                anim_source_model_path=anim_source_model,
+            )
+            return jsonify({"ok": True, **info})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 400
+        finally:
+            if tmp and os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
 
     @app.post("/api/save")
     def save():

@@ -48,14 +48,62 @@ instead of the full-color PNG.
 
 `Wireframe` overlays the mesh edges.
 
+`Play` + frame slider preview animation frames from the loaded model.
+
+`Upscale x2` scales the extracted working skin in place so you can test higher
+resolution texture edits directly on the mesh before saving back to `.MDL`.
+
+`Image -> Paper MDL` generates a new flat/cutout IDPO model from an RGBA image
+("Paper Mario"-style billboard workflow), writes it to the output path, and
+loads it immediately for testing/editing.
+
+The paper-generator row also accepts:
+- a **height reference MDL** (for example `samples/PipSid.MDL`) so the
+  generated cutout's maximum height matches that character scale.
+- an **animation donor MDL** whose frame-to-frame motion is transferred as a
+  simple transform timeline onto the generated cutout (best for first-pass
+  replacement previews; not a full skeletal/vertex retarget).
+
 ![The same model with the wireframe overlay enabled](docs/screenshots/wireframe.jpg)
 
 `Flip V` inverts the model's vertical texture mapping and remembers the choice
 per model (see below).
 
+Use the skin selector in the left pane to switch between `skin0`, `skin1`, ...
+for models that carry multiple skins. `+ Skin` duplicates the active skin as a
+new slot, and `- Skin` removes the active slot (keeping at least one).
+
 The paint toolbar above the left pane has a color picker, a brush-size slider,
 and `Undo` / `Redo`. Undo/redo are also bound to `Ctrl/Cmd+Z` and `Ctrl/Cmd+Y`
 (`Cmd+Shift+Z` works too).
+
+## Recent additions in this branch
+
+This repo now includes a broader authoring flow around the original texture
+editor:
+
+- **Animation preview in the viewer.** `/api/model` can return all frame
+  positions (`includeFrames=1`), and the UI has play/scrub controls to inspect
+  model motion directly in the editor.
+- **Image-to-paper model generation.** The editor can build a flat cutout IDPO
+  model from an RGBA image, then auto-load it for immediate preview.
+- **Reference-size matching.** Paper generation can match the cutout's max
+  height to a reference model (for example `samples/PipSid.MDL`) so replacement
+  assets are authored at in-game character scale.
+- **Donor animation transfer.** Paper generation can reuse a donor model's
+  frame timeline as a simple transform-based animation track for first-pass
+  replacement testing.
+- **Visibility-safe 2D cutouts.** The generated flat model uses a
+  character-facing plane and mirrored triangle winding so strict in-game
+  backface culling does not hide the asset.
+- **Multi-skin authoring.** You can browse, edit, add, and remove multiple
+  skin slots in the UI; save re-embeds all current `skin*.png` slots and updates
+  model skin count accordingly.
+- **Upscaling workflow.** Working skins can be upscaled in place and
+  re-previewed before writing back to `.MDL`.
+- **Non-destructive save loop.** Edits are still rooted in `_backup_mdl/`, so
+  repeated saves keep rebuilding from the pristine original model rather than
+  compounding binary deltas.
 
 ## Orientation
 
