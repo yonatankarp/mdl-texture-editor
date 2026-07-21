@@ -72,10 +72,14 @@ function rebuild565() {
 }
 
 // Draw a skin image into the paint canvas (sizing it to the image) and refresh
-// both textures. Resets undo history, since it's a fresh image.
-function loadSkinIntoCanvas(url, done) {
+// both textures. Resets undo history, since it's a fresh image. `isCurrent`, if
+// given, is re-checked when the image finishes decoding: image loads are async,
+// so a superseded load whose request was already in flight must not clobber the
+// current model's canvas when its onload finally fires.
+function loadSkinIntoCanvas(url, done, isCurrent) {
   const img = new Image();
   img.onload = () => {
+    if (isCurrent && !isCurrent()) return;
     paint.width = img.naturalWidth;
     paint.height = img.naturalHeight;
     pctx.drawImage(img, 0, 0);
@@ -276,6 +280,11 @@ async function load(path) {
   } catch (e) {
     console.warn("orientation fetch failed", e);
   }
+  // A newer load() started while we awaited: bail before touching any shared
+  // state (flipV, currentPath, the mesh, the paint canvas). Otherwise a
+  // superseded load's skin image finishes last and clobbers the current
+  // model's canvas and currentPath.
+  if (myLoad !== loadToken) return;
   flipV = !!orient.flipV;
   if (flipV) {
     for (let i = 1; i < g.uvs.length; i += 2) g.uvs[i] = 1 - g.uvs[i];
@@ -313,7 +322,7 @@ async function load(path) {
 
   // Show the current skin in the paint canvas right away (the decoded skin is
   // identical to the working PNG produced by extract below).
-  loadSkinIntoCanvas(skinUrl(path));
+  loadSkinIntoCanvas(skinUrl(path), undefined, () => myLoad === loadToken);
 
   // Extract this model's skin so edits can be saved back, and watch it so
   // external-editor changes still hot-reload into the canvas.
