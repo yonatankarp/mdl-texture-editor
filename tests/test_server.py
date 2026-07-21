@@ -123,6 +123,50 @@ def test_extract_reuses_existing_skin_but_force_resets(tmp_path):
     assert r.get_json().get("reused") is not True
     assert Image.open(skin).getpixel((0, 0)) != (1, 2, 3)
 
+def test_extract_reports_all_skins(tmp_path):
+    # Bad2.MDL carries 7 skins; extract must report the count and a working-PNG
+    # path per skin so the UI can offer a skin selector.
+    c, model = edit_client(tmp_path, model="Bad2.MDL")
+    ex = c.post("/api/extract", json={"path": model}).get_json()
+    assert ex["numskins"] == 7
+    assert len(ex["skins"]) == 7
+    assert ex["skins"][0] == ex["skin"]
+    for i, rel in enumerate(ex["skins"]):
+        assert rel.endswith(f"skin{i}.png")
+        assert (tmp_path / rel).is_file()
+
+def test_extract_reused_branch_still_reports_all_skins(tmp_path):
+    # A non-destructive reload (reused dir) must report the same skin list. The
+    # count comes from listing the working skin PNGs, not from re-extracting.
+    c, model = edit_client(tmp_path, model="Bad2.MDL")
+    c.post("/api/extract", json={"path": model})
+    ex = c.post("/api/extract", json={"path": model}).get_json()
+    assert ex.get("reused") is True
+    assert ex["numskins"] == 7
+    assert len(ex["skins"]) == 7
+
+
+def test_extract_reflects_added_skin_after_reload(tmp_path):
+    # skin-add writes a new working PNG without touching _meta.json, so a reused
+    # reload must count the working skins on disk (as save/do_import does) rather
+    # than trust the stale _meta.json, or the new skin would vanish from the
+    # selector and never get embedded on save.
+    c, model = edit_client(tmp_path, model="Paper2.MDL")
+    ex = c.post("/api/extract", json={"path": model}).get_json()
+    assert ex["numskins"] == 1
+    c.post("/api/skin-add", json={"path": model, "fromIndex": 0})
+    reload = c.post("/api/extract", json={"path": model}).get_json()
+    assert reload.get("reused") is True
+    assert reload["numskins"] == 2
+    assert len(reload["skins"]) == 2
+
+def test_extract_single_skin_reports_one(tmp_path):
+    # Paper2.MDL has a single skin: the UI shows the selector disabled.
+    c, model = edit_client(tmp_path, model="Paper2.MDL")
+    ex = c.post("/api/extract", json={"path": model}).get_json()
+    assert ex["numskins"] == 1
+    assert ex["skins"] == [ex["skin"]]
+
 def test_skin_write_confined_to_edit_tree(tmp_path):
     c, model = edit_client(tmp_path)
     ex = c.post("/api/extract", json={"path": model}).get_json()
@@ -201,6 +245,22 @@ def test_upscale_doubles_working_skin_size(tmp_path):
     assert r.status_code == 200
     w1, h1 = Image.open(skin).size
     assert (w1, h1) == (w0 * 2, h0 * 2)
+
+
+def test_upscale_resizes_every_skin_so_multiskin_save_succeeds(tmp_path):
+    # do_import rejects a save when skins differ in size, so upscaling must
+    # resize every working skin, not just skin0. Bad2.MDL carries 7 skins.
+    c, model = edit_client(tmp_path, model="Bad2.MDL")
+    ex = c.post("/api/extract", json={"path": model}).get_json()
+    assert len(ex["skins"]) == 7
+    sizes0 = [Image.open(tmp_path / s).size for s in ex["skins"]]
+    r = c.post("/api/upscale", json={"path": model, "factor": 2, "method": "nearest"})
+    assert r.status_code == 200
+    for rel, (w0, h0) in zip(ex["skins"], sizes0):
+        assert Image.open(tmp_path / rel).size == (w0 * 2, h0 * 2)
+    # Save would raise "all skins must be same size" if any skin lagged behind.
+    s = c.post("/api/save", json={"path": model})
+    assert s.status_code == 200
 
 
 def test_paper_from_image_generates_idpo_model(tmp_path):

@@ -136,15 +136,24 @@ def create_app(root):
         full = _resolve(root, body["path"])
         workdir = _workdir(root, full)
         skin0 = os.path.join(workdir, "skin0.png")
-        if os.path.exists(skin0) and not body.get("force"):
-            skins = _skin_rel_list(root, workdir)
-            return jsonify({"skin": os.path.relpath(skin0, root), "skins": skins, "dir": workdir, "reused": True})
-        try:
-            mdl_tool.extract(full, workdir)
-        except (SystemExit, Exception) as e:
-            return jsonify({"error": str(e)}), 400
-        skin = os.path.relpath(os.path.join(workdir, "skin0.png"), root)
-        return jsonify({"skin": skin, "skins": _skin_rel_list(root, workdir), "dir": workdir})
+        reused = os.path.exists(skin0) and not body.get("force")
+        if not reused:
+            try:
+                mdl_tool.extract(full, workdir)
+            except (SystemExit, Exception) as e:
+                return jsonify({"error": str(e)}), 400
+        # Report every working skin so the UI can offer a selector. Count them
+        # by listing the working PNGs (skin0..skinN-1) rather than trusting
+        # _meta.json's numskins: skin-add / skin-remove change the files on disk
+        # without rewriting _meta, and save (do_import) re-counts the same way,
+        # so this keeps extract, the selector, and save on one source of truth
+        # even after a reload. Paths are repo-relative, the same basis as
+        # `skin`, so the frontend can feed them to skin-write/watch.
+        skins = _skin_rel_list(root, workdir)
+        resp = {"skin": skins[0], "dir": workdir, "numskins": len(skins), "skins": skins}
+        if reused:
+            resp["reused"] = True
+        return jsonify(resp)
 
     @app.get("/api/skins")
     def skins():
@@ -207,12 +216,15 @@ def create_app(root):
 
     @app.post("/api/upscale")
     def upscale():
-        # Upscale the working skin in place, then let /api/watch hot-reload it.
+        # Upscale every working skin in place, then let /api/watch hot-reload
+        # it. All skins must be resized: do_import rejects a save when skins
+        # differ in size, so upscaling only skin0 would break saving any
+        # multi-skin model.
         body = request.get_json(force=True)
         full = _resolve(root, body["path"])
         workdir = _workdir(root, full)
-        skin0 = os.path.join(workdir, "skin0.png")
-        if not os.path.isfile(skin0):
+        names = _skin_files(workdir)
+        if not names:
             abort(400, "no extracted skin; load the model first")
         factor = max(1, int(body.get("factor", 2)))
         method = str(body.get("method", "nearest")).lower()
@@ -222,10 +234,14 @@ def create_app(root):
             filt = Image.Resampling.BILINEAR
         else:
             filt = Image.Resampling.NEAREST
-        img = Image.open(skin0).convert("RGB")
-        out = img.resize((img.width * factor, img.height * factor), filt)
-        out.save(skin0)
-        return jsonify({"ok": True, "w": out.width, "h": out.height, "factor": factor, "method": method})
+        w = h = 0
+        for name in names:
+            p = os.path.join(workdir, name)
+            img = Image.open(p).convert("RGB")
+            out = img.resize((img.width * factor, img.height * factor), filt)
+            out.save(p)
+            w, h = out.width, out.height
+        return jsonify({"ok": True, "w": w, "h": h, "factor": factor, "method": method})
 
     @app.post("/api/paper-from-image")
     def paper_from_image():

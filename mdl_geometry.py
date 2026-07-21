@@ -83,12 +83,17 @@ def _parse_idpo(b, include_frames=False):
         tris.append(struct.unpack_from("<4i", b, off + i * 16))
     off += numtris * 16
 
-    frame_positions = []
-    frame_off = off
-    for _ in range(numframes):
-        fpos, frame_off = _decode_idpo_frame(b, frame_off, numverts, scale, trans)
-        frame_positions.append(fpos)
-    packed0 = frame_positions[0]
+    # The default /api/model path only needs frame 0 for positions/uvs;
+    # decode the full frame set only when the caller asks for animation.
+    if include_frames:
+        frame_positions = []
+        frame_off = off
+        for _ in range(numframes):
+            fpos, frame_off = _decode_idpo_frame(b, frame_off, numverts, scale, trans)
+            frame_positions.append(fpos)
+        packed0 = frame_positions[0]
+    else:
+        packed0, _ = _decode_idpo_frame(b, off, numverts, scale, trans)
 
     positions = []
     uvs = []
@@ -199,12 +204,17 @@ def _parse_a5(b, magic, include_frames=False):
     for i in range(numtris):
         tris.append(struct.unpack_from("<6h", b, tri_off + i * 12))
 
+    # The default /api/model path only needs frame 0 for positions/uvs;
+    # decode the full frame set only when the caller asks for animation.
     frame_off = tri_off + numtris * 12
-    frame_vertices = []
-    for _ in range(numframes):
-        verts, frame_off = _decode_a5_frame_vertices(b, frame_off, numverts, magic)
-        frame_vertices.append(verts)
-    verts0 = frame_vertices[0]
+    if include_frames:
+        frame_vertices = []
+        for _ in range(numframes):
+            verts, frame_off = _decode_a5_frame_vertices(b, frame_off, numverts, magic)
+            frame_vertices.append(verts)
+        verts0 = frame_vertices[0]
+    else:
+        verts0, _ = _decode_a5_frame_vertices(b, frame_off, numverts, magic)
 
     positions = []
     uvs = []

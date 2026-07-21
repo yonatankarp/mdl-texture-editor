@@ -19,6 +19,13 @@ Python 3.9+ and the packages in `requirements.txt` (Flask and Pillow). The
 native file picker (the Browse button) is macOS-only; on other platforms type
 an absolute path into the field instead.
 
+On Debian/Ubuntu, install the venv package first if `python3 -m venv` reports
+that `ensurepip` is unavailable:
+
+```bash
+sudo apt install python3-venv
+```
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -127,12 +134,12 @@ left pane; strokes appear on the 3D model as you draw. `Undo`/`Redo` (buttons or
 
 ![Painting a stroke on the skin, mirrored live on the 3D model](docs/screenshots/painting.jpg)
 
-**Edit in an external editor.** Loading a model automatically extracts its skin
-to a working folder (`_edit/<model>/skin0.png`) and shows that folder's path in
-the toolbar. `Reveal folder` opens it (macOS). Edit `skin0.png` in any image
-editor and save; the tool watches the file and re-textures the model live.
-(Reloading a model reuses an existing working skin, so it won't discard
-unsaved edits.)
+**Edit in an external editor.** Loading a model automatically extracts its
+skins to a working folder (`_edit/<model>/skin0.png` … `skinN.png`) and shows
+that folder's path in the toolbar. `Reveal folder` opens it (macOS). Edit
+`skin0.png` (or any `skinN.png`) in any image editor and save; the tool watches
+the working skin and re-textures the model live. (Reloading a model reuses an
+existing working skin, so it won't discard unsaved edits.)
 
 When it looks right, click `Save to .MDL` to re-embed the edited skin into the
 binary model. The first extract backs up the untouched original to
@@ -141,6 +148,27 @@ saves never compound and the original is always recoverable. Skins are
 re-embedded as RGB565 (8-bit models are upgraded on save).
 
 The `_edit/` and `_backup_mdl/` folders are git-ignored.
+
+## Multi-skin models
+
+Some models carry more than one skin: alternate textures the engine can swap
+between (team colors, damage states, and so on). `Bad2.MDL` in `samples/`, for
+example, has seven. The `Skin` selector above the left pane lists every skin in
+the loaded model; pick one to view it on the 3D model and paint it. Switching
+retargets both the paint canvas and the external-editor watcher, so each skin
+edits independently. Models with a single skin show the selector disabled.
+
+`+ Skin` duplicates the active skin as a new slot and `- Skin` removes the
+active slot (always keeping at least one). Added and removed slots are reflected
+the next time the model is reloaded, and `Save to .MDL` updates the model's skin
+count to match.
+
+![The Skin selector listing a model's skins, with add/remove controls, one selected and shown on the 3D model](docs/screenshots/multi-skin.jpg)
+
+Every skin is extracted to the working folder, and `Save to .MDL` re-embeds all
+of them, so edits to any skin are written back together. Painted changes persist
+per stroke, so switching skins never loses work; the undo history resets to the
+newly selected skin.
 
 ## Layout
 
@@ -157,7 +185,7 @@ tests/             pytest suite for the decoder and the server
 ## Tests
 
 ```bash
-python -m pytest
+python3 -m pytest
 ```
 
 ## Origin

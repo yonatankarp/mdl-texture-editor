@@ -4,3 +4,6 @@
 # `python -m pytest`.
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+    "frontend: browser-driven tests (require pytest-playwright + a chromium install)",
+]
