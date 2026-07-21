@@ -77,6 +77,13 @@ function loadSkinIntoCanvas(url, done) {
     paint.width = img.naturalWidth;
     paint.height = img.naturalHeight;
     pctx.drawImage(img, 0, 0);
+    // Resizing the paint canvas changes the texture's source dimensions.
+    // paintTex was created from this canvas at its original (default) size, and
+    // a bare needsUpdate does NOT reallocate the GL texture for the new size —
+    // it keeps sampling as solid black, so the model renders black. Disposing
+    // forces a full reallocation from the now-correctly-sized canvas on the
+    // next render. (quantTex sidesteps this by being recreated each rebuild.)
+    paintTex.dispose();
     paintTex.needsUpdate = true;
     rebuild565();
     undoStack.length = 0;
