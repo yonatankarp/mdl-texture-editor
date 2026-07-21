@@ -104,10 +104,16 @@ def create_app(root):
     @app.post("/api/extract")
     def extract():
         # Extract the model's skin(s) to its working dir so they can be edited
-        # externally or in-browser. Idempotent: mdl_tool re-reads the pristine
-        # backup, so re-extracting resets to the original skin.
-        full = _resolve(root, request.get_json(force=True)["path"])
+        # externally or in-browser. Non-destructive by default: if a working
+        # skin already exists it is reused, so reloading a model never wipes
+        # in-progress edits. Pass force=true to re-extract a pristine copy from
+        # the backup (a "reset skin" action).
+        body = request.get_json(force=True)
+        full = _resolve(root, body["path"])
         workdir = _workdir(root, full)
+        skin0 = os.path.join(workdir, "skin0.png")
+        if os.path.exists(skin0) and not body.get("force"):
+            return jsonify({"skin": os.path.relpath(skin0, root), "dir": workdir, "reused": True})
         os.makedirs(os.path.join(root, "_backup_mdl"), exist_ok=True)
         try:
             with _pushd(root):

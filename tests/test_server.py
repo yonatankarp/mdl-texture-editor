@@ -84,6 +84,22 @@ def test_extract_creates_working_skin_and_backup(tmp_path):
     assert (tmp_path / skin_rel).is_file()
     assert (tmp_path / "_backup_mdl" / model).is_file()
 
+def test_extract_reuses_existing_skin_but_force_resets(tmp_path):
+    c, model = edit_client(tmp_path)
+    c.post("/api/extract", json={"path": model})
+    skin = tmp_path / "_edit" / "Bad2" / "skin0.png"
+    # simulate an in-progress edit
+    w, h = Image.open(skin).size
+    Image.new("RGB", (w, h), (1, 2, 3)).save(skin)
+    # a plain reload must NOT clobber the edit
+    r = c.post("/api/extract", json={"path": model})
+    assert r.get_json().get("reused") is True
+    assert Image.open(skin).getpixel((0, 0)) == (1, 2, 3)
+    # force re-extracts a pristine copy from the backup
+    r = c.post("/api/extract", json={"path": model, "force": True})
+    assert r.get_json().get("reused") is not True
+    assert Image.open(skin).getpixel((0, 0)) != (1, 2, 3)
+
 def test_skin_write_confined_to_edit_tree(tmp_path):
     c, model = edit_client(tmp_path)
     c.post("/api/extract", json={"path": model})
