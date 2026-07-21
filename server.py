@@ -1,4 +1,4 @@
-import base64, contextlib, io, json, os, sys, time, subprocess
+import base64, hashlib, io, json, os, sys, time, subprocess
 from flask import Flask, request, jsonify, send_file, abort, send_from_directory, Response
 import mdl_tool
 from mdl_geometry import parse_geometry
@@ -37,23 +37,13 @@ def _resolve(root, path):
     return full
 
 def _workdir(root, model_full):
-    # Per-model editable-skin working dir under root/_edit/<stem>. Both the
-    # external editor and the in-browser canvas read/write skin0.png here, and
-    # the file watcher points at it, so all edit paths share one pipeline.
+    # Per-model editable-skin working dir under root/_edit/<stem>-<key>. Both
+    # the external editor and the in-browser canvas read/write skin0.png here,
+    # and the file watcher points at it, so all edit paths share one pipeline.
+    # The dir-hash key keeps two same-named models in different folders apart.
     stem = os.path.splitext(os.path.basename(model_full))[0]
-    return os.path.join(root, "_edit", stem)
-
-
-@contextlib.contextmanager
-def _pushd(d):
-    # mdl_tool.extract/do_import resolve the _backup_mdl dir relative to CWD;
-    # run them with CWD pinned to root so backups always land in one place.
-    prev = os.getcwd()
-    os.chdir(d)
-    try:
-        yield
-    finally:
-        os.chdir(prev)
+    key = hashlib.sha1(os.path.dirname(os.path.abspath(model_full)).encode()).hexdigest()[:8]
+    return os.path.join(root, "_edit", f"{stem}-{key}")
 
 
 def mtime_changed(path, last):
@@ -68,6 +58,9 @@ def _skin_image(mdl_path, index):
 
 def create_app(root):
     app = Flask(__name__, static_folder=None)
+    # Absolute backup dir so mdl_tool's extract/import don't depend on the
+    # process CWD (the server is threaded; there is no chdir dance).
+    mdl_tool.BACKUP_DIR = os.path.abspath(os.path.join(root, "_backup_mdl"))
 
     @app.get("/api/model")
     def model():
@@ -114,10 +107,8 @@ def create_app(root):
         skin0 = os.path.join(workdir, "skin0.png")
         if os.path.exists(skin0) and not body.get("force"):
             return jsonify({"skin": os.path.relpath(skin0, root), "dir": workdir, "reused": True})
-        os.makedirs(os.path.join(root, "_backup_mdl"), exist_ok=True)
         try:
-            with _pushd(root):
-                mdl_tool.extract(full, workdir)
+            mdl_tool.extract(full, workdir)
         except (SystemExit, Exception) as e:
             return jsonify({"error": str(e)}), 400
         skin = os.path.relpath(os.path.join(workdir, "skin0.png"), root)
@@ -149,12 +140,10 @@ def create_app(root):
         if not os.path.isdir(workdir):
             abort(400, "no extracted skin; load the model first")
         try:
-            with _pushd(root):
-                mdl_tool.do_import(full, workdir)
+            mdl_tool.do_import(full, workdir)
         except (SystemExit, Exception) as e:
             return jsonify({"error": str(e)}), 400
-        backup = os.path.join("_backup_mdl", os.path.basename(full))
-        return jsonify({"ok": True, "backup": backup})
+        return jsonify({"ok": True, "backup": os.path.relpath(mdl_tool.backup_path(full), root)})
 
     @app.post("/api/reveal")
     def reveal():

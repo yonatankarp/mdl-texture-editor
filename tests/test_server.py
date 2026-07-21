@@ -82,12 +82,13 @@ def test_extract_creates_working_skin_and_backup(tmp_path):
     assert r.status_code == 200
     skin_rel = r.get_json()["skin"]
     assert (tmp_path / skin_rel).is_file()
-    assert (tmp_path / "_backup_mdl" / model).is_file()
+    # backup exists (filename is dir-hash-prefixed to avoid same-name collisions)
+    assert list((tmp_path / "_backup_mdl").glob(f"*-{model}"))
 
 def test_extract_reuses_existing_skin_but_force_resets(tmp_path):
     c, model = edit_client(tmp_path)
-    c.post("/api/extract", json={"path": model})
-    skin = tmp_path / "_edit" / "Bad2" / "skin0.png"
+    ex = c.post("/api/extract", json={"path": model}).get_json()
+    skin = tmp_path / ex["skin"]
     # simulate an in-progress edit
     w, h = Image.open(skin).size
     Image.new("RGB", (w, h), (1, 2, 3)).save(skin)
@@ -102,23 +103,28 @@ def test_extract_reuses_existing_skin_but_force_resets(tmp_path):
 
 def test_skin_write_confined_to_edit_tree(tmp_path):
     c, model = edit_client(tmp_path)
-    c.post("/api/extract", json={"path": model})
+    ex = c.post("/api/extract", json={"path": model}).get_json()
     ok = c.post("/api/skin-write",
-                json={"file": "_edit/Bad2/skin0.png", "png": _png_data_url(1, 1, (10, 20, 30))})
+                json={"file": ex["skin"], "png": _png_data_url(1, 1, (10, 20, 30))})
     assert ok.status_code == 200
-    # a path escaping _edit/ must be refused
+    # a path escaping _edit/ must be refused; check the *real* traversal target
+    # ("../evil.png" resolves to tmp_path.parent), not a location it would never
+    # be written to anyway.
+    target = tmp_path.parent / "evil.png"
+    assert not target.exists()
     bad = c.post("/api/skin-write",
                  json={"file": "../evil.png", "png": _png_data_url(1, 1, (0, 0, 0))})
     assert bad.status_code == 403
-    assert not (tmp_path / "evil.png").exists()
+    assert not target.exists()
 
 def test_save_roundtrips_edited_skin_into_mdl(tmp_path):
     c, model = edit_client(tmp_path)
-    c.post("/api/extract", json={"path": model})
-    meta = json.load(open(tmp_path / "_edit" / "Bad2" / "_meta.json"))
+    ex = c.post("/api/extract", json={"path": model}).get_json()
+    skin_rel = ex["skin"]
+    meta = json.load(open(tmp_path / os.path.dirname(skin_rel) / "_meta.json"))
     w, h = meta["skin_w"], meta["skin_h"]
     c.post("/api/skin-write",
-           json={"file": "_edit/Bad2/skin0.png", "png": _png_data_url(w, h, (200, 40, 60))})
+           json={"file": skin_rel, "png": _png_data_url(w, h, (200, 40, 60))})
     r = c.post("/api/save", json={"path": model})
     assert r.status_code == 200
     # the saved .MDL now decodes to that solid color (within 565 quantization)

@@ -217,6 +217,7 @@ async function load(path) {
       console.warn("extract failed", ex.error);
     }
   } catch (e) {
+    if (myLoad !== loadToken) return; // don't clobber a newer load's state
     editSkin = editDir = null;
     showEditPath(null);
     console.warn("extract failed", e);

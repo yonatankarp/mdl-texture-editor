@@ -17,12 +17,16 @@ Usage:
   python mdl_tool.py import  <Model.MDL> <in_dir> [--out <Model.MDL>]
   python mdl_tool.py info    <Model.MDL>
 """
-import struct, os, sys, json
+import struct, os, sys, json, hashlib
 from PIL import Image
 
 HDR = 84
 TYPE_8 = 0
 TYPE_565 = 2
+
+# Directory originals are backed up to before a re-embed. The server points
+# this at an absolute path so backups don't depend on the process CWD.
+BACKUP_DIR = "_backup_mdl"
 
 _PALETTE = None
 
@@ -122,7 +126,11 @@ def enc565(img):
     return bytes(out), w, h
 
 def backup_path(mdl):
-    return os.path.join("_backup_mdl", os.path.basename(mdl))
+    # Key the backup by the model's directory so two models sharing a filename
+    # in different folders (e.g. the game's MDL/ and a mods dir) don't share
+    # one backup and clobber each other's pristine original.
+    key = hashlib.sha1(os.path.dirname(os.path.abspath(mdl)).encode()).hexdigest()[:8]
+    return os.path.join(BACKUP_DIR, f"{key}-{os.path.basename(mdl)}")
 
 def scale_uvs(fmt, uv_bytes, numverts, old_w, old_h, new_w, new_h):
     sx = new_w / old_w; sy = new_h / old_h
@@ -146,8 +154,8 @@ def uv_size(fmt, numverts):
 
 def extract(mdl, outdir):
     b = open(mdl, "rb").read()
-    os.makedirs("_backup_mdl", exist_ok=True)
     bp = backup_path(mdl)
+    os.makedirs(os.path.dirname(bp) or ".", exist_ok=True)
     if not os.path.exists(bp):
         open(bp, "wb").write(b)
         print(f"backed up original -> {bp}")
