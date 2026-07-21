@@ -96,12 +96,14 @@ The `_edit/` and `_backup_mdl/` folders are git-ignored.
 
 ## Multi-skin models
 
-Some models carry more than one skin — alternate textures the engine can swap
+Some models carry more than one skin: alternate textures the engine can swap
 between (team colors, damage states, and so on). `Bad2.MDL` in `samples/`, for
 example, has seven. The `Skin` selector above the left pane lists every skin in
 the loaded model; pick one to view it on the 3D model and paint it. Switching
 retargets both the paint canvas and the external-editor watcher, so each skin
 edits independently. Models with a single skin show the selector disabled.
+
+![The Skin selector listing a model's skins, with one selected and shown on the 3D model](docs/screenshots/multi-skin.jpg)
 
 Every skin is extracted to the working folder, and `Save to .MDL` re-embeds all
 of them, so edits to any skin are written back together. Painted changes persist
