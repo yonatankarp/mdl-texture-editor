@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Per-model orientation overrides (machine-specific absolute paths)
+orientation.json
+
+# Skins extracted for the external-editor hot-reload workflow
+samples/_skins/

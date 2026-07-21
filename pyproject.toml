@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+# Flat layout: put the repo root on sys.path so tests can `import server`,
+# `import mdl_geometry`, `import mdl_tool` whether run as `pytest` or
+# `python -m pytest`.
+pythonpath = ["."]
+testpaths = ["tests"]

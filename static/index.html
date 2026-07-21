@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>MDL Texture Editor</title>
+<style>
+  html,body{margin:0;height:100%;font-family:sans-serif;background:#222;color:#ddd}
+  #bar{height:40px;display:flex;align-items:center;gap:12px;padding:0 12px;background:#111}
+  #split{display:flex;height:calc(100% - 40px)}
+  #left,#right{flex:1;position:relative;overflow:hidden;border-right:1px solid #000}
+  #tex{max-width:100%;max-height:100%;display:block;margin:auto;image-rendering:pixelated}
+  #canvas{width:100%;height:100%;display:block}
+  #msg{position:absolute;top:12px;left:12px;right:12px;padding:8px 12px;background:#7a1f1f;
+       color:#fff;border-radius:4px;font-size:13px;display:none;z-index:5}
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "/static/vendor/three.module.js",
+  "three/addons/controls/OrbitControls.js": "/static/vendor/OrbitControls.js"
+}}
+</script>
+</head>
+<body>
+  <div id="bar">
+    <label>MDL path: <input id="path" value="samples/Paper2.MDL" size="40"></label>
+    <button id="browse">Browse…</button>
+    <button id="load">Load</button>
+    <button id="mode565">565 preview: OFF</button>
+    <button id="wire">Wireframe: OFF</button>
+    <button id="flipv">Flip V: OFF</button>
+  </div>
+  <div id="split">
+    <div id="left"><img id="tex"></div>
+    <div id="right"><div id="msg"></div><canvas id="canvas"></canvas></div>
+  </div>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
