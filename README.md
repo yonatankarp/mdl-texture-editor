@@ -65,29 +65,28 @@ the next time you open that model.
 `orientation.json` holds only the exceptions and is git-ignored, since the
 paths are specific to your machine.
 
-## External-editor hot-reload
+## Editing a texture
 
-The viewer watches a skin PNG on disk and re-textures the model whenever that
-file changes, so you can paint in any editor and watch the result update.
+Loading a model automatically extracts its skin to a working folder
+(`_edit/<model>/skin0.png`) and shows that folder's path in the toolbar.
+`Reveal folder` opens it (macOS). Edit `skin0.png` in any image editor and save;
+the tool watches the file and re-textures the model live as you work.
 
-First extract a model's skin to a PNG:
+When it looks right, click `Save to .MDL` to re-embed the edited skin into the
+binary model. The first extract backs up the untouched original to
+`_backup_mdl/<model>`, and every save rebuilds from that backup, so repeated
+saves never compound and the original is always recoverable. Skins are
+re-embedded as RGB565 (8-bit models are upgraded on save).
 
-```bash
-python mdl_tool.py extract samples/Paper2.MDL samples/_skins/Paper2
-```
+In-browser painting (brush, colors, undo/redo) is planned next and will write to
+the same working skin, so it shares this reload-and-save pipeline.
 
-Then edit `samples/_skins/Paper2/skin0.png` in your image editor and save. The
-watched path is currently hardcoded near the top of `static/app.js`
-(`WATCH_PNG`); point it at your extracted skin if you work on a different model.
-
-`mdl_tool.py` also imports an edited skin back into the binary model
-(`python mdl_tool.py import ...`), which is how a finished texture gets written
-back to the `.MDL`.
+The `_edit/` and `_backup_mdl/` folders are git-ignored.
 
 ## Layout
 
 ```
-server.py          Flask backend: geometry, skin, orientation, watch, file-pick
+server.py          Flask backend: geometry, skin, orientation, extract/save, watch, file-pick
 mdl_geometry.py    Pure-Python MDL geometry decoder (IDPO / MDL5 / MDL3)
 mdl_tool.py        Skin decode/encode + extract/import CLI (8-bit and 565)
 game_palette.raw   256-color palette for 8-bit skins

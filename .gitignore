@@ -8,3 +8,7 @@ orientation.json
 
 # Skins extracted for the external-editor hot-reload workflow
 samples/_skins/
+
+# Editable-skin working dirs and original-model backups
+_edit/
+_backup_mdl/

@@ -1,4 +1,4 @@
-import io, json, os, sys, time, subprocess
+import base64, contextlib, io, json, os, sys, time, subprocess
 from flask import Flask, request, jsonify, send_file, abort, send_from_directory, Response
 import mdl_tool
 from mdl_geometry import parse_geometry
@@ -35,6 +35,26 @@ def _resolve(root, path):
     if not os.path.isfile(full):
         abort(404, "not found")
     return full
+
+def _workdir(root, model_full):
+    # Per-model editable-skin working dir under root/_edit/<stem>. Both the
+    # external editor and the in-browser canvas read/write skin0.png here, and
+    # the file watcher points at it, so all edit paths share one pipeline.
+    stem = os.path.splitext(os.path.basename(model_full))[0]
+    return os.path.join(root, "_edit", stem)
+
+
+@contextlib.contextmanager
+def _pushd(d):
+    # mdl_tool.extract/do_import resolve the _backup_mdl dir relative to CWD;
+    # run them with CWD pinned to root so backups always land in one place.
+    prev = os.getcwd()
+    os.chdir(d)
+    try:
+        yield
+    finally:
+        os.chdir(prev)
+
 
 def mtime_changed(path, last):
     m = os.path.getmtime(path)
@@ -80,6 +100,66 @@ def create_app(root):
             data.pop(key, None)
         _save_orient(data)
         return jsonify({"flipV": flip_v})
+
+    @app.post("/api/extract")
+    def extract():
+        # Extract the model's skin(s) to its working dir so they can be edited
+        # externally or in-browser. Idempotent: mdl_tool re-reads the pristine
+        # backup, so re-extracting resets to the original skin.
+        full = _resolve(root, request.get_json(force=True)["path"])
+        workdir = _workdir(root, full)
+        os.makedirs(os.path.join(root, "_backup_mdl"), exist_ok=True)
+        try:
+            with _pushd(root):
+                mdl_tool.extract(full, workdir)
+        except (SystemExit, Exception) as e:
+            return jsonify({"error": str(e)}), 400
+        skin = os.path.relpath(os.path.join(workdir, "skin0.png"), root)
+        return jsonify({"skin": skin, "dir": workdir})
+
+    @app.post("/api/skin-write")
+    def skin_write():
+        # Overwrite a working skin PNG (used by the in-browser canvas). The
+        # file watcher picks up the change and re-textures the model. Confined
+        # to the _edit tree so it can't clobber arbitrary files.
+        body = request.get_json(force=True)
+        full = os.path.abspath(os.path.join(root, body["file"]))
+        edit_root = os.path.join(root, "_edit") + os.sep
+        if not full.startswith(edit_root):
+            abort(403, "skin-write only allowed under _edit/")
+        raw = body["png"].split(",", 1)[-1]  # strip optional data-URL prefix
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "wb") as f:
+            f.write(base64.b64decode(raw))
+        return jsonify({"ok": True})
+
+    @app.post("/api/save")
+    def save():
+        # Re-embed the edited working skin into the .MDL. do_import rebuilds
+        # from the pristine backup (made at extract time), so repeated saves
+        # never compound; the original stays recoverable in _backup_mdl/.
+        full = _resolve(root, request.get_json(force=True)["path"])
+        workdir = _workdir(root, full)
+        if not os.path.isdir(workdir):
+            abort(400, "no extracted skin; load the model first")
+        try:
+            with _pushd(root):
+                mdl_tool.do_import(full, workdir)
+        except (SystemExit, Exception) as e:
+            return jsonify({"error": str(e)}), 400
+        backup = os.path.join("_backup_mdl", os.path.basename(full))
+        return jsonify({"ok": True, "backup": backup})
+
+    @app.post("/api/reveal")
+    def reveal():
+        # Open the working-skin folder in the OS file browser (macOS only) so
+        # the user can find the PNG to edit externally.
+        if sys.platform != "darwin":
+            return jsonify({"error": "reveal is macOS-only"}), 501
+        full = _resolve(root, request.get_json(force=True)["path"])
+        workdir = _workdir(root, full)
+        subprocess.run(["open", workdir], check=False)
+        return jsonify({"ok": True})
 
     @app.get("/api/skin")
     def skin():
