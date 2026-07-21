@@ -19,6 +19,13 @@ Python 3.9+ and the packages in `requirements.txt` (Flask and Pillow). The
 native file picker (the Browse button) is macOS-only; on other platforms type
 an absolute path into the field instead.
 
+On Debian/Ubuntu, install the venv package first if `python3 -m venv` reports
+that `ensurepip` is unavailable:
+
+```bash
+sudo apt install python3-venv
+```
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -125,7 +132,7 @@ tests/             pytest suite for the decoder and the server
 ## Tests
 
 ```bash
-python -m pytest
+python3 -m pytest
 ```
 
 ## Origin
