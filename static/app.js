@@ -8,16 +8,33 @@ scene.background = new THREE.Color(0x333333);
 const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 5000);
 const controls = new OrbitControls(camera, canvas);
 
+// Left pane is a paint surface. The 3D model is textured directly from this
+// canvas (a CanvasTexture), so brush strokes appear on the model instantly;
+// strokes are also persisted to the working skin PNG for Save-to-.MDL and the
+// external-editor round-trip.
+const paint = document.getElementById("paint");
+const pctx = paint.getContext("2d", { willReadFrequently: true });
+const paintTex = new THREE.CanvasTexture(paint);
+paintTex.flipY = true;
+paintTex.colorSpace = THREE.SRGBColorSpace;
+
 let mesh = null;
 let fullMat = null, mat565 = null, mode565 = false, wire = false;
-let fullTex = null, quantTex = null;
-let reapplyToken = 0;
+let quantTex = null;
 let loadToken = 0;
 let flipV = false;      // per-model vertical orientation override (persisted)
 let currentPath = null; // path of the model currently loaded
 let editSkin = null;    // working skin PNG (repo-relative) for the loaded model
 let editDir = null;     // working dir the skin was extracted to
 let watchSource = null; // per-model file watcher (recreated on each load)
+let suppressWatchUntil = 0; // ignore our own skin-write echoes until this time
+
+// paint state
+let brushColor = document.getElementById("color").value;
+let brushSize = +document.getElementById("brushsize").value;
+let drawing = false, lastX = 0, lastY = 0;
+const undoStack = [], redoStack = [];
+const MAX_HISTORY = 30;
 
 function skinUrl(path) {
   return "/api/skin?path=" + encodeURIComponent(path) + "&index=0";
@@ -31,31 +48,149 @@ function quantize565InPlace(data) {
     data[i] = Math.floor((r >> 3) * 255 / 31);       // R: 5 bits
     data[i + 1] = Math.floor((g >> 2) * 255 / 63);   // G: 6 bits
     data[i + 2] = Math.floor((b >> 3) * 255 / 31);   // B: 5 bits
-    // alpha (data[i+3]) left as-is
   }
 }
 
-// Builds the RGB565-quantized CanvasTexture asynchronously (image load is
-// async). Calls onReady(tex) once decoded; never throws synchronously.
-function buildQuantizedTextureFromUrl(url, onReady) {
+// Rebuild the RGB565-quantized texture from the current paint canvas.
+function rebuild565() {
+  const c = document.createElement("canvas");
+  c.width = paint.width;
+  c.height = paint.height;
+  const cx = c.getContext("2d");
+  cx.drawImage(paint, 0, 0);
+  const d = cx.getImageData(0, 0, c.width, c.height);
+  quantize565InPlace(d.data);
+  cx.putImageData(d, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.flipY = true;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  if (quantTex) quantTex.dispose();
+  quantTex = tex;
+  if (mat565) { mat565.map = tex; mat565.needsUpdate = true; }
+}
+
+// Draw a skin image into the paint canvas (sizing it to the image) and refresh
+// both textures. Resets undo history, since it's a fresh image.
+function loadSkinIntoCanvas(url, done) {
   const img = new Image();
   img.onload = () => {
-    const canvas2d = document.createElement("canvas");
-    canvas2d.width = img.naturalWidth;
-    canvas2d.height = img.naturalHeight;
-    const ctx = canvas2d.getContext("2d");
-    ctx.drawImage(img, 0, 0);
-    const imgData = ctx.getImageData(0, 0, canvas2d.width, canvas2d.height);
-    quantize565InPlace(imgData.data);
-    ctx.putImageData(imgData, 0, 0);
-
-    const tex = new THREE.CanvasTexture(canvas2d);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    onReady(tex);
+    paint.width = img.naturalWidth;
+    paint.height = img.naturalHeight;
+    pctx.drawImage(img, 0, 0);
+    paintTex.needsUpdate = true;
+    rebuild565();
+    undoStack.length = 0;
+    redoStack.length = 0;
+    updateHistoryButtons();
+    if (done) done();
   };
-  img.onerror = () => console.warn("565 quantize: failed to load image", url);
+  img.onerror = () => console.warn("failed to load skin image", url);
   img.src = url;
 }
+
+// --- undo / redo ---
+function snapshot() {
+  return pctx.getImageData(0, 0, paint.width, paint.height);
+}
+function updateHistoryButtons() {
+  document.getElementById("undo").disabled = undoStack.length === 0;
+  document.getElementById("redo").disabled = redoStack.length === 0;
+}
+function pushUndo() {
+  undoStack.push(snapshot());
+  if (undoStack.length > MAX_HISTORY) undoStack.shift();
+  redoStack.length = 0;
+  updateHistoryButtons();
+}
+function undo() {
+  if (!undoStack.length) return;
+  redoStack.push(snapshot());
+  pctx.putImageData(undoStack.pop(), 0, 0);
+  afterEdit();
+  updateHistoryButtons();
+}
+function redo() {
+  if (!redoStack.length) return;
+  undoStack.push(snapshot());
+  pctx.putImageData(redoStack.pop(), 0, 0);
+  afterEdit();
+  updateHistoryButtons();
+}
+// Refresh the model textures and persist after a committed change.
+function afterEdit() {
+  paintTex.needsUpdate = true;
+  rebuild565();
+  persistSkin();
+}
+
+// Write the canvas to the working skin PNG. The file watcher would echo this
+// back as a "changed" event; suppress that briefly so a self-write doesn't
+// reload the canvas and wipe undo history.
+function persistSkin() {
+  if (!editSkin) return;
+  suppressWatchUntil = Date.now() + 1500;
+  fetch("/api/skin-write", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ file: editSkin, png: paint.toDataURL("image/png") }),
+  }).catch((e) => console.warn("skin-write failed", e));
+}
+
+// --- painting ---
+function canvasXY(e) {
+  const r = paint.getBoundingClientRect();
+  return [
+    (e.clientX - r.left) / r.width * paint.width,
+    (e.clientY - r.top) / r.height * paint.height,
+  ];
+}
+paint.addEventListener("pointerdown", (e) => {
+  if (!editSkin) return; // nothing loaded to edit yet
+  drawing = true;
+  paint.setPointerCapture(e.pointerId);
+  pushUndo();
+  [lastX, lastY] = canvasXY(e);
+  pctx.fillStyle = brushColor;
+  pctx.beginPath();
+  pctx.arc(lastX, lastY, brushSize / 2, 0, Math.PI * 2);
+  pctx.fill();
+  paintTex.needsUpdate = true;
+});
+paint.addEventListener("pointermove", (e) => {
+  if (!drawing) return;
+  const [x, y] = canvasXY(e);
+  pctx.strokeStyle = brushColor;
+  pctx.lineWidth = brushSize;
+  pctx.lineCap = "round";
+  pctx.lineJoin = "round";
+  pctx.beginPath();
+  pctx.moveTo(lastX, lastY);
+  pctx.lineTo(x, y);
+  pctx.stroke();
+  [lastX, lastY] = [x, y];
+  paintTex.needsUpdate = true; // live model update during the stroke
+});
+function endStroke(e) {
+  if (!drawing) return;
+  drawing = false;
+  try { paint.releasePointerCapture(e.pointerId); } catch (_) {}
+  rebuild565();   // refresh 565 preview once per stroke (cheap enough)
+  persistSkin();
+}
+paint.addEventListener("pointerup", endStroke);
+paint.addEventListener("pointercancel", endStroke);
+
+// toolbar + keyboard
+document.getElementById("color").addEventListener("input", (e) => { brushColor = e.target.value; });
+document.getElementById("brushsize").addEventListener("input", (e) => { brushSize = +e.target.value; });
+document.getElementById("undo").addEventListener("click", undo);
+document.getElementById("redo").addEventListener("click", redo);
+window.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const k = e.key.toLowerCase();
+  if (k === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
+  else if (k === "y" || (k === "z" && e.shiftKey)) { e.preventDefault(); redo(); }
+});
 
 function applyWire() {
   const prev = scene.getObjectByName("uvwire");
@@ -81,11 +216,10 @@ function resize() {
 }
 window.addEventListener("resize", resize);
 
-// Default camera azimuth, in degrees measured from world +Z toward +X. These
-// models face world +X (Quake forward), and the camera used to sit on +Z, so
-// every model loaded in profile ("facing right"). ~110 turns the camera onto
-// the model's front and a bit past it for a flattering 3/4 view. The user can
-// still orbit freely afterward.
+// Default camera azimuth, in degrees from world +Z toward +X. These models face
+// world +X (Quake forward); the camera used to sit on +Z, so models loaded in
+// profile. ~110 turns the camera onto the model's front and a bit past it for a
+// 3/4 view. The user can still orbit freely afterward.
 const DEFAULT_AZIMUTH_DEG = 110;
 
 function frameCamera(geometry) {
@@ -107,22 +241,22 @@ function showMsg(text) {
   el.style.display = text ? "block" : "none";
 }
 
+function showEditPath(dir) {
+  const el = document.getElementById("editpath");
+  if (el) el.textContent = dir ? "editing: " + dir : "";
+}
+
 async function load(path) {
   const myLoad = ++loadToken;
-  const myReapply = reapplyToken;
   const resp = await fetch("/api/model?path=" + encodeURIComponent(path));
   const g = await resp.json();
   if (!resp.ok || !g.positions) {
-    // Model couldn't be decoded (unsupported format, or a degenerate model).
-    // Leave the current view in place and tell the user why.
     showMsg("Can't open this model: " + (g.error || ("HTTP " + resp.status)));
     return;
   }
   showMsg("");
 
-  // Apply the persisted per-model vertical override, if any. The decoder's
-  // default orientation is correct for most models; a stored flipV re-flips
-  // the exceptions (flat props like the newspaper) the user corrected.
+  // Persisted per-model vertical override (flat props load upside-down).
   let orient = { flipV: false };
   try {
     orient = await (await fetch("/api/orientation?path=" + encodeURIComponent(path))).json();
@@ -141,14 +275,9 @@ async function load(path) {
   geo.setAttribute("uv", new THREE.Float32BufferAttribute(g.uvs, 2));
   geo.rotateX(-Math.PI / 2);
 
-  const tex = new THREE.TextureLoader().load(skinUrl(path));
-  tex.flipY = true;
-  tex.colorSpace = THREE.SRGBColorSpace;
-  const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide });
-
-  // Built with map: null so toggling to 565 before quantization finishes
-  // can't crash; buildQuantizedTexture() fills in .map asynchronously below.
-  const q = new THREE.MeshBasicMaterial({ map: null, side: THREE.DoubleSide });
+  // Both materials draw from the shared paint canvas (full-color and 565).
+  const mat = new THREE.MeshBasicMaterial({ map: paintTex, side: THREE.DoubleSide });
+  const q = new THREE.MeshBasicMaterial({ map: quantTex, side: THREE.DoubleSide });
 
   if (mesh) {
     scene.remove(mesh);
@@ -158,45 +287,23 @@ async function load(path) {
       if (prevWire.material) prevWire.material.dispose();
     }
     if (mesh.geometry) mesh.geometry.dispose();
-    if (fullTex) fullTex.dispose();
-    if (quantTex) quantTex.dispose();
     if (fullMat) fullMat.dispose();
     if (mat565) mat565.dispose();
   }
   mesh = new THREE.Mesh(geo, mat);
   scene.add(mesh);
   frameCamera(geo);
-
-  fullTex = tex;
-  quantTex = null;
   fullMat = mat;
   mat565 = q;
   mesh.material = mode565 ? mat565 : fullMat;
   applyWire();
 
-  document.getElementById("tex").src = skinUrl(path);
+  // Show the current skin in the paint canvas right away (the decoded skin is
+  // identical to the working PNG produced by extract below).
+  loadSkinIntoCanvas(skinUrl(path));
 
-  buildQuantizedTextureFromUrl(skinUrl(path), (tex565) => {
-    // Stale guard: discard this result instead of writing into a disposed
-    // or unrelated material if any of the following happened while this
-    // load's quantize was in flight:
-    //  - a newer load() call has superseded this one (loadToken advanced), or
-    //  - a hot-reload (reapplySkinFromPng) completed and installed fresher
-    //    textures (reapplyToken advanced), or
-    //  - mat565 was reassigned out from under this load.
-    if (myLoad !== loadToken || reapplyToken !== myReapply || mat565 !== q) {
-      tex565.dispose();
-      return;
-    }
-    quantTex = tex565;
-    mat565.map = tex565;
-    mat565.map.needsUpdate = true;
-    mat565.needsUpdate = true;
-  });
-
-  // Extract this model's skin so it can be edited, and point the left pane and
-  // the file watcher at that working PNG. Editing it (externally or, later, in
-  // the canvas) hot-reloads onto the model.
+  // Extract this model's skin so edits can be saved back, and watch it so
+  // external-editor changes still hot-reload into the canvas.
   try {
     const ex = await (await fetch("/api/extract", {
       method: "POST",
@@ -207,8 +314,6 @@ async function load(path) {
     if (ex.skin) {
       editSkin = ex.skin;
       editDir = ex.dir;
-      document.getElementById("tex").src =
-        "/api/pngskin?file=" + encodeURIComponent(editSkin) + "&_=" + Date.now();
       subscribeWatch(editSkin);
       showEditPath(editDir);
     } else {
@@ -217,70 +322,31 @@ async function load(path) {
       console.warn("extract failed", ex.error);
     }
   } catch (e) {
-    if (myLoad !== loadToken) return; // don't clobber a newer load's state
+    if (myLoad !== loadToken) return;
     editSkin = editDir = null;
     showEditPath(null);
     console.warn("extract failed", e);
   }
 }
 
-// Regenerates BOTH the full-res and 565-quantized textures from the watched
-// skin PNG (hot-reload). Unlike a single-texture update, this keeps the 565
-// preview in sync with what's on disk even if it's the active mode.
+// External edits to the working skin reload into the canvas. Skips our own
+// skin-write echoes so painting doesn't reset its own undo history.
 function reapplySkinFromPng() {
-  // The watch stream emits "changed" immediately on connect (mtime vs. an
-  // initial baseline of 0.0), which races the page's own initial load(). If
-  // materials aren't built yet, skip this cycle; a real edit will re-fire.
-  if (!fullMat || !mat565 || !editSkin) return;
-
-  const token = ++reapplyToken;
-  const mat565Ref = mat565;
-  const url = "/api/pngskin?file=" + encodeURIComponent(editSkin) + "&_=" + Date.now();
-
-  const nf = new THREE.TextureLoader().load(url);
-  nf.flipY = true;
-  nf.colorSpace = THREE.SRGBColorSpace;
-  if (fullTex) fullTex.dispose();
-  fullTex = nf;
-  fullMat.map = nf;
-  fullMat.map.needsUpdate = true;
-
-  buildQuantizedTextureFromUrl(url, (tex565) => {
-    // Stale guard: discard if a fresh load() (new mat565 instance) or a
-    // later reapply has superseded this one.
-    if (mat565 !== mat565Ref || token !== reapplyToken) {
-      tex565.dispose();
-      return;
-    }
-    if (quantTex) quantTex.dispose();
-    quantTex = tex565;
-    mat565.map = tex565;
-    mat565.map.needsUpdate = true;
-    mat565.needsUpdate = true;
-  });
-
-  document.getElementById("tex").src = url;
+  if (!editSkin) return;
+  if (Date.now() < suppressWatchUntil) return;
+  loadSkinIntoCanvas("/api/pngskin?file=" + encodeURIComponent(editSkin) + "&_=" + Date.now());
 }
 
-// (Re)subscribe the file watcher to the loaded model's working skin. External
-// edits to that PNG fire "changed", which re-textures the model live.
 function subscribeWatch(file) {
   if (watchSource) watchSource.close();
   watchSource = new EventSource("/api/watch?file=" + encodeURIComponent(file));
   watchSource.onmessage = (e) => { if (e.data === "changed") reapplySkinFromPng(); };
 }
 
-function showEditPath(dir) {
-  const el = document.getElementById("editpath");
-  if (el) el.textContent = dir ? "editing: " + dir : "";
-}
-
 document.getElementById("load").onclick = () =>
   load(document.getElementById("path").value);
-document.getElementById("tex").src = skinUrl(document.getElementById("path").value);
 
-// Browse: ask the backend to open a native file dialog, then load the picked
-// absolute path (the field also accepts a hand-typed absolute path).
+// Browse: native file dialog, then load the picked absolute path.
 document.getElementById("browse").onclick = async () => {
   try {
     const r = await (await fetch("/api/pick")).json();
@@ -306,10 +372,7 @@ document.getElementById("wire").onclick = (e) => {
   e.target.textContent = "Wireframe: " + (wire ? "ON" : "OFF");
 };
 
-// Flip V: invert the model's texture V instantly and persist the choice for
-// this path. Corrects flat props (newspaper, vases) that don't follow the
-// decoder's default vertical orientation. The wireframe shares this geometry,
-// so it updates for free.
+// Flip V: invert the model's texture V instantly and persist per model.
 document.getElementById("flipv").onclick = async (e) => {
   if (!mesh || !currentPath) return;
   flipV = !flipV;
@@ -356,7 +419,7 @@ document.getElementById("save").onclick = async (e) => {
   btn.disabled = false;
 };
 
-// Reveal: open the working-skin folder so it can be edited externally (macOS).
+// Reveal: open the working-skin folder to edit externally (macOS).
 document.getElementById("reveal").onclick = async () => {
   if (!currentPath) return;
   try {

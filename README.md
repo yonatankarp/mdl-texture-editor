@@ -3,10 +3,10 @@
 [![CI](https://github.com/yonatankarp/mdl-texture-editor/actions/workflows/ci.yml/badge.svg)](https://github.com/yonatankarp/mdl-texture-editor/actions/workflows/ci.yml)
 
 A local web tool for previewing and improving the textures of GameStudio A5 /
-Quake-lineage `.MDL` models. The left pane shows the model's skin as a flat
-PNG; the right pane renders the textured 3D model in real time. Edit the skin
-in your usual image editor and the model re-textures live, so you can see how a
-change looks on the mesh as you make it.
+Quake-lineage `.MDL` models. The left pane is an editable view of the model's
+skin; the right pane renders the textured 3D model in real time. Paint on the
+skin in the browser, or edit it in your usual image editor, and the model
+re-textures live so you can see how a change looks on the mesh as you make it.
 
 ![The editor: the model's skin PNG on the left, the live textured 3D render on the right](docs/screenshots/split-view.jpg)
 
@@ -53,6 +53,10 @@ instead of the full-color PNG.
 `Flip V` inverts the model's vertical texture mapping and remembers the choice
 per model (see below).
 
+The paint toolbar above the left pane has a color picker, a brush-size slider,
+and `Undo` / `Redo`. Undo/redo are also bound to `Ctrl/Cmd+Z` and `Ctrl/Cmd+Y`
+(`Cmd+Shift+Z` works too).
+
 ## Orientation
 
 The decoder flips texture V by default, which is correct for the large majority
@@ -67,19 +71,26 @@ paths are specific to your machine.
 
 ## Editing a texture
 
-Loading a model automatically extracts its skin to a working folder
-(`_edit/<model>/skin0.png`) and shows that folder's path in the toolbar.
-`Reveal folder` opens it (macOS). Edit `skin0.png` in any image editor and save;
-the tool watches the file and re-textures the model live as you work.
+You can edit two ways, and both feed the same live preview and save path.
+
+**Paint in the browser.** Pick a color and brush size and paint directly on the
+left pane; strokes appear on the 3D model as you draw. `Undo`/`Redo` (buttons or
+`Ctrl/Cmd+Z` / `Ctrl/Cmd+Y`) step through your strokes.
+
+![Painting a stroke on the skin, mirrored live on the 3D model](docs/screenshots/painting.jpg)
+
+**Edit in an external editor.** Loading a model automatically extracts its skin
+to a working folder (`_edit/<model>/skin0.png`) and shows that folder's path in
+the toolbar. `Reveal folder` opens it (macOS). Edit `skin0.png` in any image
+editor and save; the tool watches the file and re-textures the model live.
+(Reloading a model reuses an existing working skin, so it won't discard
+unsaved edits.)
 
 When it looks right, click `Save to .MDL` to re-embed the edited skin into the
 binary model. The first extract backs up the untouched original to
 `_backup_mdl/<model>`, and every save rebuilds from that backup, so repeated
 saves never compound and the original is always recoverable. Skins are
 re-embedded as RGB565 (8-bit models are upgraded on save).
-
-In-browser painting (brush, colors, undo/redo) is planned next and will write to
-the same working skin, so it shares this reload-and-save pipeline.
 
 The `_edit/` and `_backup_mdl/` folders are git-ignored.
 
