@@ -27,19 +27,44 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pytest
       - name: Run tests
-        run: python -m pytest -q
+        run: python -m pytest -q -m "not frontend"
+
+  # Browser-driven frontend tests. Kept out of the Python matrix above: they're
+  # Python-version-independent, so running them once avoids downloading chromium
+  # three times for no extra coverage.
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Install chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Run frontend tests
+        run: python -m pytest -q -m frontend
 
   # Single stable status check for branch protection, independent of the
   # matrix. Require "all-tests" on main rather than each "test (3.x)" job.
   all-tests:
     if: always()
-    needs: test
+    needs: [test, frontend]
     runs-on: ubuntu-latest
     steps:
-      - name: Verify test matrix succeeded
+      - name: Verify test jobs succeeded
         run: |
           if [ "${{ needs.test.result }}" != "success" ]; then
             echo "test matrix did not succeed: ${{ needs.test.result }}"
             exit 1
           fi
-          echo "all matrix jobs passed"
+          if [ "${{ needs.frontend.result }}" != "success" ]; then
+            echo "frontend tests did not succeed: ${{ needs.frontend.result }}"
+            exit 1
+          fi
+          echo "all test jobs passed"
