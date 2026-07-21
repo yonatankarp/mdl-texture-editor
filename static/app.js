@@ -24,8 +24,10 @@ let quantTex = null;
 let loadToken = 0;
 let flipV = false;      // per-model vertical orientation override (persisted)
 let currentPath = null; // path of the model currently loaded
-let editSkin = null;    // working skin PNG (repo-relative) for the loaded model
+let editSkin = null;    // working skin PNG (repo-relative) currently being edited
 let editDir = null;     // working dir the skin was extracted to
+let skinPaths = [];     // working PNG (repo-relative) per skin index for this model
+let currentSkinIndex = 0;
 let watchSource = null; // per-model file watcher (recreated on each load)
 let suppressWatchUntil = 0; // ignore our own skin-write echoes until this time
 
@@ -323,12 +325,17 @@ async function load(path) {
     })).json();
     if (myLoad !== loadToken) return; // superseded by a newer load
     if (ex.skin) {
-      editSkin = ex.skin;
       editDir = ex.dir;
+      skinPaths = ex.skins && ex.skins.length ? ex.skins : [ex.skin];
+      currentSkinIndex = 0;
+      editSkin = skinPaths[0];
+      populateSkinSelector(ex.numskins || skinPaths.length);
       subscribeWatch(editSkin);
       showEditPath(editDir);
     } else {
       editSkin = editDir = null;
+      skinPaths = [];
+      populateSkinSelector(1);
       showEditPath(null);
       console.warn("extract failed", ex.error);
     }
@@ -336,6 +343,8 @@ async function load(path) {
   } catch (e) {
     if (myLoad !== loadToken) return;
     editSkin = editDir = null;
+    skinPaths = [];
+    populateSkinSelector(1);
     showEditPath(null);
     updateResetButton();
     console.warn("extract failed", e);
@@ -355,6 +364,37 @@ function subscribeWatch(file) {
   watchSource = new EventSource("/api/watch?file=" + encodeURIComponent(file));
   watchSource.onmessage = (e) => { if (e.data === "changed") reapplySkinFromPng(); };
 }
+
+// --- skin selector (multi-skin models) ---
+const skinsel = document.getElementById("skinsel");
+
+// Rebuild the dropdown for a model with `count` skins. Disabled (grayed) for
+// single-skin models so the control is always present but only interactive
+// when there's a choice to make.
+function populateSkinSelector(count) {
+  skinsel.replaceChildren();
+  for (let i = 0; i < count; i++) {
+    const opt = document.createElement("option");
+    opt.value = String(i);
+    opt.textContent = "Skin " + i;
+    skinsel.appendChild(opt);
+  }
+  skinsel.value = "0";
+  skinsel.disabled = count <= 1;
+}
+
+// Point the paint canvas and file watcher at skin `i`. Committed pixels are
+// already on disk (every stroke/undo persists), so switching only reloads the
+// working PNG and retargets the watcher; the per-canvas undo stack resets, the
+// same as loading a new model.
+function switchSkin(i) {
+  if (i < 0 || i >= skinPaths.length || i === currentSkinIndex) return;
+  currentSkinIndex = i;
+  editSkin = skinPaths[i];
+  loadSkinIntoCanvas("/api/pngskin?file=" + encodeURIComponent(editSkin) + "&_=" + Date.now());
+  subscribeWatch(editSkin);
+}
+skinsel.addEventListener("change", (e) => switchSkin(+e.target.value));
 
 document.getElementById("load").onclick = () =>
   load(document.getElementById("path").value);

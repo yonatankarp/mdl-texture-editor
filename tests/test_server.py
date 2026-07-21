@@ -101,6 +101,35 @@ def test_extract_reuses_existing_skin_but_force_resets(tmp_path):
     assert r.get_json().get("reused") is not True
     assert Image.open(skin).getpixel((0, 0)) != (1, 2, 3)
 
+def test_extract_reports_all_skins(tmp_path):
+    # Bad2.MDL carries 7 skins; extract must report the count and a working-PNG
+    # path per skin so the UI can offer a skin selector.
+    c, model = edit_client(tmp_path, model="Bad2.MDL")
+    ex = c.post("/api/extract", json={"path": model}).get_json()
+    assert ex["numskins"] == 7
+    assert len(ex["skins"]) == 7
+    assert ex["skins"][0] == ex["skin"]
+    for i, rel in enumerate(ex["skins"]):
+        assert rel.endswith(f"skin{i}.png")
+        assert (tmp_path / rel).is_file()
+
+def test_extract_reused_branch_still_reports_all_skins(tmp_path):
+    # A non-destructive reload (reused dir) must report the same skin list, since
+    # it reads _meta.json rather than re-extracting.
+    c, model = edit_client(tmp_path, model="Bad2.MDL")
+    c.post("/api/extract", json={"path": model})
+    ex = c.post("/api/extract", json={"path": model}).get_json()
+    assert ex.get("reused") is True
+    assert ex["numskins"] == 7
+    assert len(ex["skins"]) == 7
+
+def test_extract_single_skin_reports_one(tmp_path):
+    # Paper2.MDL has a single skin: the UI shows the selector disabled.
+    c, model = edit_client(tmp_path, model="Paper2.MDL")
+    ex = c.post("/api/extract", json={"path": model}).get_json()
+    assert ex["numskins"] == 1
+    assert ex["skins"] == [ex["skin"]]
+
 def test_skin_write_confined_to_edit_tree(tmp_path):
     c, model = edit_client(tmp_path)
     ex = c.post("/api/extract", json={"path": model}).get_json()
