@@ -251,6 +251,7 @@ function showEditPath(dir) {
 
 async function load(path) {
   const myLoad = ++loadToken;
+  disarmReset();
   const resp = await fetch("/api/model?path=" + encodeURIComponent(path));
   const g = await resp.json();
   if (!resp.ok || !g.positions) {
@@ -324,10 +325,12 @@ async function load(path) {
       showEditPath(null);
       console.warn("extract failed", ex.error);
     }
+    updateResetButton();
   } catch (e) {
     if (myLoad !== loadToken) return;
     editSkin = editDir = null;
     showEditPath(null);
+    updateResetButton();
     console.warn("extract failed", e);
   }
 }
@@ -435,6 +438,69 @@ document.getElementById("reveal").onclick = async () => {
     console.warn("reveal failed", err);
   }
 };
+
+// --- reset skin ---
+// Restore the pristine skin, discarding unsaved edits. Uses a two-step inline
+// confirm rather than a native dialog: the first click arms the button for 3s
+// and the second click within that window performs the reset.
+const resetBtn = document.getElementById("reset");
+let resetArmed = false, resetTimer = 0;
+
+function updateResetButton() {
+  resetBtn.disabled = !editSkin;
+}
+
+function disarmReset() {
+  resetArmed = false;
+  clearTimeout(resetTimer);
+  resetTimer = 0;
+  resetBtn.textContent = "Reset skin";
+  resetBtn.classList.remove("toggle");
+  resetBtn.setAttribute("aria-pressed", "false");
+}
+
+async function doReset() {
+  if (!currentPath || !editSkin) return;
+  disarmReset();
+  const myLoad = loadToken; // bail if a different model is loaded mid-reset
+  resetBtn.disabled = true;
+  resetBtn.textContent = "Resetting…";
+  // The server rewrites skin0.png; pre-suppress the watcher so its "changed"
+  // event doesn't fire a second, redundant reload on top of ours.
+  suppressWatchUntil = Date.now() + 1500;
+  try {
+    const r = await (await fetch("/api/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: currentPath, force: true }),
+    })).json();
+    if (myLoad !== loadToken) return; // superseded by a newer load
+    if (r.skin) {
+      editSkin = r.skin;
+      editDir = r.dir;
+      // loadSkinIntoCanvas resizes, redraws, rebuilds both textures and clears
+      // undo/redo. The on-disk skin is already pristine, so no skin-write here.
+      loadSkinIntoCanvas("/api/pngskin?file=" + encodeURIComponent(editSkin) + "&_=" + Date.now());
+      showMsg("");
+    } else {
+      showMsg("Reset failed: " + (r.error || "unknown error"));
+    }
+  } catch (err) {
+    showMsg("Reset failed: " + err);
+  }
+  resetBtn.textContent = "Reset skin";
+  updateResetButton();
+}
+
+resetBtn.addEventListener("click", () => {
+  if (!editSkin) return;
+  if (resetArmed) { doReset(); return; }
+  resetArmed = true;
+  resetBtn.textContent = "Confirm reset?";
+  resetBtn.classList.add("toggle");
+  resetBtn.setAttribute("aria-pressed", "true");
+  resetTimer = setTimeout(disarmReset, 3000);
+});
 
 resize();
 load(document.getElementById("path").value);
