@@ -15,11 +15,9 @@ let reapplyToken = 0;
 let loadToken = 0;
 let flipV = false;      // per-model vertical orientation override (persisted)
 let currentPath = null; // path of the model currently loaded
-
-// Hardcoded for now (matches the extraction path produced by
-// `python mdl_tool.py extract samples/Paper2.MDL samples/_skins/Paper2`).
-// TODO: wire WATCH_PNG (and the skin index) to a UI field.
-const WATCH_PNG = "samples/_skins/Paper2/skin0.png";
+let editSkin = null;    // working skin PNG (repo-relative) for the loaded model
+let editDir = null;     // working dir the skin was extracted to
+let watchSource = null; // per-model file watcher (recreated on each load)
 
 function skinUrl(path) {
   return "/api/skin?path=" + encodeURIComponent(path) + "&index=0";
@@ -195,6 +193,35 @@ async function load(path) {
     mat565.map.needsUpdate = true;
     mat565.needsUpdate = true;
   });
+
+  // Extract this model's skin so it can be edited, and point the left pane and
+  // the file watcher at that working PNG. Editing it (externally or, later, in
+  // the canvas) hot-reloads onto the model.
+  try {
+    const ex = await (await fetch("/api/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    })).json();
+    if (myLoad !== loadToken) return; // superseded by a newer load
+    if (ex.skin) {
+      editSkin = ex.skin;
+      editDir = ex.dir;
+      document.getElementById("tex").src =
+        "/api/pngskin?file=" + encodeURIComponent(editSkin) + "&_=" + Date.now();
+      subscribeWatch(editSkin);
+      showEditPath(editDir);
+    } else {
+      editSkin = editDir = null;
+      showEditPath(null);
+      console.warn("extract failed", ex.error);
+    }
+  } catch (e) {
+    if (myLoad !== loadToken) return; // don't clobber a newer load's state
+    editSkin = editDir = null;
+    showEditPath(null);
+    console.warn("extract failed", e);
+  }
 }
 
 // Regenerates BOTH the full-res and 565-quantized textures from the watched
@@ -204,11 +231,11 @@ function reapplySkinFromPng() {
   // The watch stream emits "changed" immediately on connect (mtime vs. an
   // initial baseline of 0.0), which races the page's own initial load(). If
   // materials aren't built yet, skip this cycle; a real edit will re-fire.
-  if (!fullMat || !mat565) return;
+  if (!fullMat || !mat565 || !editSkin) return;
 
   const token = ++reapplyToken;
   const mat565Ref = mat565;
-  const url = "/api/pngskin?file=" + encodeURIComponent(WATCH_PNG) + "&_=" + Date.now();
+  const url = "/api/pngskin?file=" + encodeURIComponent(editSkin) + "&_=" + Date.now();
 
   const nf = new THREE.TextureLoader().load(url);
   nf.flipY = true;
@@ -235,8 +262,18 @@ function reapplySkinFromPng() {
   document.getElementById("tex").src = url;
 }
 
-const watchSource = new EventSource("/api/watch?file=" + encodeURIComponent(WATCH_PNG));
-watchSource.onmessage = (e) => { if (e.data === "changed") reapplySkinFromPng(); };
+// (Re)subscribe the file watcher to the loaded model's working skin. External
+// edits to that PNG fire "changed", which re-textures the model live.
+function subscribeWatch(file) {
+  if (watchSource) watchSource.close();
+  watchSource = new EventSource("/api/watch?file=" + encodeURIComponent(file));
+  watchSource.onmessage = (e) => { if (e.data === "changed") reapplySkinFromPng(); };
+}
+
+function showEditPath(dir) {
+  const el = document.getElementById("editpath");
+  if (el) el.textContent = dir ? "editing: " + dir : "";
+}
 
 document.getElementById("load").onclick = () =>
   load(document.getElementById("path").value);
@@ -288,6 +325,48 @@ document.getElementById("flipv").onclick = async (e) => {
     });
   } catch (err) {
     console.warn("persist orientation failed", err);
+  }
+};
+
+// Save: re-embed the edited working skin into the .MDL (backup taken at load).
+document.getElementById("save").onclick = async (e) => {
+  if (!currentPath) return;
+  const btn = e.target;
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Saving…";
+  try {
+    const r = await (await fetch("/api/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: currentPath }),
+    })).json();
+    if (r.ok) {
+      showMsg("");
+      btn.textContent = "Saved ✓";
+      setTimeout(() => { btn.textContent = label; }, 1500);
+    } else {
+      showMsg("Save failed: " + (r.error || "unknown error"));
+      btn.textContent = label;
+    }
+  } catch (err) {
+    showMsg("Save failed: " + err);
+    btn.textContent = label;
+  }
+  btn.disabled = false;
+};
+
+// Reveal: open the working-skin folder so it can be edited externally (macOS).
+document.getElementById("reveal").onclick = async () => {
+  if (!currentPath) return;
+  try {
+    await fetch("/api/reveal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: currentPath }),
+    });
+  } catch (err) {
+    console.warn("reveal failed", err);
   }
 };
 

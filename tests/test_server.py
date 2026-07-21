@@ -1,5 +1,6 @@
-import io, os, time
+import base64, io, json, os, shutil, time
 from PIL import Image
+import mdl_tool
 import server as server_mod
 from server import create_app, mtime_changed
 
@@ -9,6 +10,19 @@ def client():
     app = create_app(ROOT)
     app.config.update(TESTING=True)
     return app.test_client()
+
+def edit_client(tmp_path, model="Bad2.MDL"):
+    # An app rooted at a throwaway dir holding a copy of a sample model, so the
+    # extract/save endpoints write _edit/ and _backup_mdl/ under tmp, not the repo.
+    shutil.copy(os.path.join(ROOT, "samples", model), tmp_path / model)
+    app = create_app(str(tmp_path))
+    app.config.update(TESTING=True)
+    return app.test_client(), model
+
+def _png_data_url(w, h, color):
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), color).save(buf, "PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 def test_model_endpoint_returns_geometry():
     r = client().get("/api/model?path=samples/Paper2.MDL")
@@ -61,6 +75,71 @@ def test_orientation_keyed_by_absolute_path(tmp_path, monkeypatch):
     abs_path = os.path.join(ROOT, "samples", "Paper2.MDL")
     c.post("/api/orientation", json={"path": "samples/Paper2.MDL", "flipV": True})
     assert c.get("/api/orientation?path=" + abs_path).get_json() == {"flipV": True}
+
+def test_extract_creates_working_skin_and_backup(tmp_path):
+    c, model = edit_client(tmp_path)
+    r = c.post("/api/extract", json={"path": model})
+    assert r.status_code == 200
+    skin_rel = r.get_json()["skin"]
+    assert (tmp_path / skin_rel).is_file()
+    # backup exists (filename is dir-hash-prefixed to avoid same-name collisions)
+    assert list((tmp_path / "_backup_mdl").glob(f"*-{model}"))
+
+def test_extract_reuses_existing_skin_but_force_resets(tmp_path):
+    c, model = edit_client(tmp_path)
+    ex = c.post("/api/extract", json={"path": model}).get_json()
+    skin = tmp_path / ex["skin"]
+    # simulate an in-progress edit
+    w, h = Image.open(skin).size
+    Image.new("RGB", (w, h), (1, 2, 3)).save(skin)
+    # a plain reload must NOT clobber the edit
+    r = c.post("/api/extract", json={"path": model})
+    assert r.get_json().get("reused") is True
+    assert Image.open(skin).getpixel((0, 0)) == (1, 2, 3)
+    # force re-extracts a pristine copy from the backup
+    r = c.post("/api/extract", json={"path": model, "force": True})
+    assert r.get_json().get("reused") is not True
+    assert Image.open(skin).getpixel((0, 0)) != (1, 2, 3)
+
+def test_skin_write_confined_to_edit_tree(tmp_path):
+    c, model = edit_client(tmp_path)
+    ex = c.post("/api/extract", json={"path": model}).get_json()
+    ok = c.post("/api/skin-write",
+                json={"file": ex["skin"], "png": _png_data_url(1, 1, (10, 20, 30))})
+    assert ok.status_code == 200
+    # a path escaping _edit/ must be refused; check the *real* traversal target
+    # ("../evil.png" resolves to tmp_path.parent), not a location it would never
+    # be written to anyway.
+    target = tmp_path.parent / "evil.png"
+    assert not target.exists()
+    bad = c.post("/api/skin-write",
+                 json={"file": "../evil.png", "png": _png_data_url(1, 1, (0, 0, 0))})
+    assert bad.status_code == 403
+    assert not target.exists()
+
+def test_save_roundtrips_edited_skin_into_mdl(tmp_path):
+    c, model = edit_client(tmp_path)
+    ex = c.post("/api/extract", json={"path": model}).get_json()
+    skin_rel = ex["skin"]
+    meta = json.load(open(tmp_path / os.path.dirname(skin_rel) / "_meta.json"))
+    w, h = meta["skin_w"], meta["skin_h"]
+    c.post("/api/skin-write",
+           json={"file": skin_rel, "png": _png_data_url(w, h, (200, 40, 60))})
+    r = c.post("/api/save", json={"path": model})
+    assert r.status_code == 200
+    # the saved .MDL now decodes to that solid color (within 565 quantization)
+    b = open(tmp_path / model, "rb").read()
+    _, skins, *_ = mdl_tool.parse_skins(b)
+    sk = skins[0]
+    img = mdl_tool.dec_skin(b[sk["doff"]:sk["doff"] + sk["dlen"]], sk["w"], sk["h"], sk["t"])
+    px = img.getpixel((w // 2, h // 2))
+    assert abs(px[0] - 200) < 12 and abs(px[1] - 40) < 12 and abs(px[2] - 60) < 12
+    assert sk["t"] == 2  # re-embedded as RGB565
+
+def test_save_without_extract_is_rejected(tmp_path):
+    c, model = edit_client(tmp_path)
+    r = c.post("/api/save", json={"path": model})
+    assert r.status_code == 400
 
 def test_mtime_changed_detects_write(tmp_path):
     p = tmp_path / "skin0.png"
