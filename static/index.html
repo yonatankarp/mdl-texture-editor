@@ -63,6 +63,11 @@
        background:var(--head);border-bottom:1px solid var(--line)}
   .pane-title{font:600 11px/1 var(--ui);letter-spacing:1.6px;text-transform:uppercase;
        color:var(--faint)}
+  .skinsel{font:500 12px/1 var(--ui);letter-spacing:.2px;color:var(--text);
+       background:#1a2029;border:1px solid var(--line-2);border-radius:7px;
+       padding:7px 9px;cursor:pointer}
+  .skinsel:hover:not(:disabled){background:#212936;border-color:#3a4454}
+  .skinsel:disabled{opacity:.38;cursor:not-allowed}
   .tools{display:flex;align-items:center;gap:9px}
   .tool-sep{width:1px;height:20px;background:var(--line-2)}
   .editpath{margin-left:auto;font:11px/1 var(--mono);color:var(--muted);
@@ -145,6 +150,9 @@
     <section id="left" class="pane">
       <div class="pane-head">
         <span class="pane-title">Skin</span>
+        <select id="skinsel" class="skinsel" disabled aria-label="Select skin to edit">
+          <option value="0">Skin 0</option>
+        </select>
         <div class="tools">
           <label class="swatch" title="Brush color"><input type="color" id="color" value="#ff2d55"></label>
           <label class="size" title="Brush size">

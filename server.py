@@ -105,14 +105,26 @@ def create_app(root):
         full = _resolve(root, body["path"])
         workdir = _workdir(root, full)
         skin0 = os.path.join(workdir, "skin0.png")
-        if os.path.exists(skin0) and not body.get("force"):
-            return jsonify({"skin": os.path.relpath(skin0, root), "dir": workdir, "reused": True})
+        reused = os.path.exists(skin0) and not body.get("force")
+        if not reused:
+            try:
+                mdl_tool.extract(full, workdir)
+            except (SystemExit, Exception) as e:
+                return jsonify({"error": str(e)}), 400
+        # Report every skin so the UI can offer a selector. numskins comes from
+        # _meta.json (written by extract); the per-skin working PNGs are named
+        # skin0..skinN-1 in the working dir. Paths are repo-relative, the same
+        # basis as `skin`, so the frontend can feed them to skin-write/watch.
         try:
-            mdl_tool.extract(full, workdir)
-        except (SystemExit, Exception) as e:
-            return jsonify({"error": str(e)}), 400
-        skin = os.path.relpath(os.path.join(workdir, "skin0.png"), root)
-        return jsonify({"skin": skin, "dir": workdir})
+            numskins = int(json.load(open(os.path.join(workdir, "_meta.json")))["numskins"])
+        except (FileNotFoundError, ValueError, KeyError):
+            numskins = 1
+        skins = [os.path.relpath(os.path.join(workdir, f"skin{i}.png"), root)
+                 for i in range(numskins)]
+        resp = {"skin": skins[0], "dir": workdir, "numskins": numskins, "skins": skins}
+        if reused:
+            resp["reused"] = True
+        return jsonify(resp)
 
     @app.post("/api/skin-write")
     def skin_write():
