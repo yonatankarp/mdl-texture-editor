@@ -260,3 +260,13 @@ def test_tool_selection_is_mutually_exclusive(page, live_server):
     assert active_tool(page) == "brush"
     page.keyboard.press("e")
     assert active_tool(page) == "eraser"
+
+
+def test_tool_shortcut_ignored_while_typing_in_text_field(page, live_server):
+    open_editor(page, live_server)
+    select_tool(page, "brush")
+    page.locator("#path").click()
+    page.locator("#path").fill("")
+    page.keyboard.type("edge")  # contains 'e' (eraser) and 'g' (fill)
+    assert page.locator("#path").input_value() == "edge", "keystrokes must reach the field"
+    assert active_tool(page) == "brush", "tool must not change while typing in a text field"
