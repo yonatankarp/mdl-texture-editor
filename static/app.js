@@ -297,6 +297,7 @@ window.addEventListener("keydown", (e) => {
   if (!editSkin) return;
   const tag = (e.target && e.target.tagName) || "";
   if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  if (drawing) return;
   const map = { b: "brush", e: "eraser", g: "fill", i: "pick" };
   const tool = map[e.key.toLowerCase()];
   if (tool) { e.preventDefault(); setTool(tool); }

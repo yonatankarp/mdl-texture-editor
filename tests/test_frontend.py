@@ -366,3 +366,22 @@ def test_eyedropper_picks_color_no_undo_and_reverts(page, live_server):
     assert color_input_value(page).lower() == expected, "eyedropper sets the brush color"
     assert page.locator("#undo").is_disabled(), "eyedropper must not push an undo step"
     assert active_tool(page) == "brush", "eyedropper reverts to the previous tool"
+
+
+def test_tool_shortcut_ignored_mid_stroke(page, live_server):
+    open_editor(page, live_server)
+    select_tool(page, "brush")
+    w, h = paint_dims(page)
+    canvas = page.locator("#paint")
+    box = canvas.bounding_box()
+    cx = box["x"] + box["width"] / 2
+    cy = box["y"] + box["height"] / 2
+    page.mouse.move(cx, cy)
+    page.mouse.down()
+    page.keyboard.press("e")  # mid-stroke: must be ignored
+    assert active_tool(page) == "brush", "tool must not switch mid-stroke"
+    page.mouse.move(cx + 5, cy + 5)
+    page.mouse.up()
+    # after the stroke ends, the shortcut works again
+    page.keyboard.press("e")
+    assert active_tool(page) == "eraser", "shortcut works once the stroke ends"
