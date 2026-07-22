@@ -319,6 +319,14 @@ def test_flood_fill_fills_contiguous_region(page, live_server):
     click_at(page, cx, cy)
     assert pixel(page, cx, cy)[:3] == [0, 0, 255], "fill recolors the contiguous blob"
 
+    # Fill must SPREAD through the contiguous blob, not just recolor the click
+    # point: a pixel well inside the solid core (clear of the anti-aliased rim)
+    # is also blue...
+    assert pixel(page, cx + 10, cy)[:3] == [0, 0, 255], "fill must spread across the region"
+    # ...and a pixel clearly outside the blob is untouched.
+    corner = pixel(page, 2, 2)
+    assert corner[:3] != [0, 0, 255], "fill must not leak outside the contiguous region"
+
     # one undo step reverts the fill back to the brush blob
     page.locator("#undo").click()
     assert pixel(page, cx, cy)[:3] == BRUSH_RGB
