@@ -41,6 +41,10 @@ let paperImageName = "";
 // paint state
 let brushColor = document.getElementById("color").value;
 let brushSize = +document.getElementById("brushsize").value;
+let eraserColor = document.getElementById("erasecolor").value;
+const TOOLS = ["brush", "eraser", "fill", "pick"];
+let currentTool = "brush";
+let prevTool = "brush";  // tool to restore after a one-shot eyedropper pick
 let drawing = false, lastX = 0, lastY = 0;
 const undoStack = [], redoStack = [];
 const MAX_HISTORY = 30;
@@ -156,6 +160,65 @@ function persistSkin() {
   }).catch((e) => console.warn("skin-write failed", e));
 }
 
+function activeColor() {
+  return currentTool === "eraser" ? eraserColor : brushColor;
+}
+function setTool(tool) {
+  if (tool === "pick" && currentTool !== "pick") prevTool = currentTool;
+  currentTool = tool;
+  for (const t of TOOLS) {
+    document.getElementById("tool-" + t)
+      .setAttribute("aria-pressed", String(t === tool));
+  }
+}
+
+function hexToRgb(hex) {
+  return [
+    parseInt(hex.slice(1, 3), 16),
+    parseInt(hex.slice(3, 5), 16),
+    parseInt(hex.slice(5, 7), 16),
+  ];
+}
+
+// Iterative 4-connected flood fill of the exact-color region under (x, y) with
+// the primary brush color. Recursion would blow the JS stack on large skins, so
+// this uses an explicit coordinate stack. Snapshots for undo only when a change
+// will actually happen. Returns true if any pixel changed.
+function floodFill(x, y) {
+  const w = paint.width, h = paint.height;
+  if (x < 0 || y < 0 || x >= w || y >= h) return false;
+  const img = pctx.getImageData(0, 0, w, h);
+  const data = img.data;
+  const idx = (px, py) => (py * w + px) * 4;
+  const s = idx(x, y);
+  const tr = data[s], tg = data[s + 1], tb = data[s + 2], ta = data[s + 3];
+  const [fr, fg, fb] = hexToRgb(brushColor);
+  const fa = 255;
+  if (tr === fr && tg === fg && tb === fb && ta === fa) return false; // no-op guard
+  pushUndo();
+  const stack = [x, y]; // flat pairs to limit allocations
+  while (stack.length) {
+    const cy = stack.pop(), cx = stack.pop();
+    if (cx < 0 || cy < 0 || cx >= w || cy >= h) continue;
+    const i = idx(cx, cy);
+    if (data[i] !== tr || data[i + 1] !== tg || data[i + 2] !== tb || data[i + 3] !== ta) continue;
+    data[i] = fr; data[i + 1] = fg; data[i + 2] = fb; data[i + 3] = fa;
+    stack.push(cx + 1, cy, cx - 1, cy, cx, cy + 1, cx, cy - 1);
+  }
+  pctx.putImageData(img, 0, 0);
+  return true;
+}
+
+function pickColor(x, y) {
+  const w = paint.width, h = paint.height;
+  if (x < 0 || y < 0 || x >= w || y >= h) return;
+  const d = pctx.getImageData(x, y, 1, 1).data;
+  const hex = "#" + [d[0], d[1], d[2]]
+    .map((v) => v.toString(16).padStart(2, "0")).join("");
+  brushColor = hex;
+  document.getElementById("color").value = hex;
+}
+
 // --- painting ---
 function canvasXY(e) {
   const r = paint.getBoundingClientRect();
@@ -166,11 +229,22 @@ function canvasXY(e) {
 }
 paint.addEventListener("pointerdown", (e) => {
   if (!editSkin) return; // nothing loaded to edit yet
+  if (currentTool === "pick") {
+    const [ex, ey] = canvasXY(e);
+    pickColor(Math.floor(ex), Math.floor(ey));
+    setTool(prevTool);
+    return;
+  }
+  if (currentTool === "fill") {
+    const [fx, fy] = canvasXY(e);
+    if (floodFill(Math.floor(fx), Math.floor(fy))) afterEdit();
+    return;
+  }
   drawing = true;
   paint.setPointerCapture(e.pointerId);
   pushUndo();
   [lastX, lastY] = canvasXY(e);
-  pctx.fillStyle = brushColor;
+  pctx.fillStyle = activeColor();
   pctx.beginPath();
   pctx.arc(lastX, lastY, brushSize / 2, 0, Math.PI * 2);
   pctx.fill();
@@ -179,7 +253,7 @@ paint.addEventListener("pointerdown", (e) => {
 paint.addEventListener("pointermove", (e) => {
   if (!drawing) return;
   const [x, y] = canvasXY(e);
-  pctx.strokeStyle = brushColor;
+  pctx.strokeStyle = activeColor();
   pctx.lineWidth = brushSize;
   pctx.lineCap = "round";
   pctx.lineJoin = "round";
@@ -202,6 +276,10 @@ paint.addEventListener("pointercancel", endStroke);
 
 // toolbar + keyboard
 document.getElementById("color").addEventListener("input", (e) => { brushColor = e.target.value; });
+document.getElementById("erasecolor").addEventListener("input", (e) => { eraserColor = e.target.value; });
+for (const t of TOOLS) {
+  document.getElementById("tool-" + t).addEventListener("click", () => setTool(t));
+}
 document.getElementById("brushsize").addEventListener("input", (e) => {
   brushSize = +e.target.value;
   document.getElementById("brushval").textContent = brushSize;
@@ -209,10 +287,20 @@ document.getElementById("brushsize").addEventListener("input", (e) => {
 document.getElementById("undo").addEventListener("click", undo);
 document.getElementById("redo").addEventListener("click", redo);
 window.addEventListener("keydown", (e) => {
-  if (!(e.ctrlKey || e.metaKey)) return;
-  const k = e.key.toLowerCase();
-  if (k === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
-  else if (k === "y" || (k === "z" && e.shiftKey)) { e.preventDefault(); redo(); }
+  if (e.ctrlKey || e.metaKey) {
+    const k = e.key.toLowerCase();
+    if (k === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
+    else if (k === "y" || (k === "z" && e.shiftKey)) { e.preventDefault(); redo(); }
+    return;
+  }
+  if (e.altKey) return;
+  if (!editSkin) return;
+  const tag = (e.target && e.target.tagName) || "";
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  if (drawing) return;
+  const map = { b: "brush", e: "eraser", g: "fill", i: "pick" };
+  const tool = map[e.key.toLowerCase()];
+  if (tool) { e.preventDefault(); setTool(tool); }
 });
 
 function applyWire() {
@@ -266,7 +354,12 @@ function showMsg(text) {
 
 function showEditPath(dir) {
   const el = document.getElementById("editpath");
-  if (el) el.textContent = dir ? "editing: " + dir : "";
+  if (!el) return;
+  // The element is direction:rtl so it ellipsizes from the left, keeping the
+  // filename (end of the path) visible; the "editing:" prefix anchors the
+  // string LTR so the path still renders in order. Full path in the tooltip.
+  el.textContent = dir ? "editing: " + dir : "";
+  el.title = dir || "";
 }
 
 function updateSkinUi() {

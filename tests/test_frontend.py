@@ -229,3 +229,159 @@ def test_animated_model_stands_upright(page, live_server_factory):
     # Bad2 is a humanoid: its tallest extent is its height. Standing => height
     # is along Y; lying on its side (the bug) => height is along Z.
     assert dy > dz and dy > dx, f"model not upright: extents dx={dx:.1f} dy={dy:.1f} dz={dz:.1f}"
+
+
+def select_tool(page, tool):
+    page.locator(f"#tool-{tool}").click()
+
+
+def active_tool(page):
+    for t in ("brush", "eraser", "fill", "pick"):
+        if page.locator(f"#tool-{t}").get_attribute("aria-pressed") == "true":
+            return t
+    return None
+
+
+def test_tool_selection_is_mutually_exclusive(page, live_server):
+    open_editor(page, live_server)
+    assert active_tool(page) == "brush", "brush is the default tool"
+
+    select_tool(page, "eraser")
+    assert active_tool(page) == "eraser"
+    assert page.locator("#tool-brush").get_attribute("aria-pressed") == "false"
+
+    select_tool(page, "fill")
+    assert active_tool(page) == "fill"
+
+    # keyboard shortcut B selects brush. The last-clicked tool button holds
+    # focus; letter keys don't activate buttons, so no extra focus step (and no
+    # canvas click that would trigger a fill once Task 3 lands).
+    page.keyboard.press("b")
+    assert active_tool(page) == "brush"
+    page.keyboard.press("e")
+    assert active_tool(page) == "eraser"
+
+
+def test_tool_shortcut_ignored_while_typing_in_text_field(page, live_server):
+    open_editor(page, live_server)
+    select_tool(page, "brush")
+    page.locator("#path").click()
+    page.locator("#path").fill("")
+    page.keyboard.type("edge")  # contains 'e' (eraser) and 'g' (fill)
+    assert page.locator("#path").input_value() == "edge", "keystrokes must reach the field"
+    assert active_tool(page) == "brush", "tool must not change while typing in a text field"
+
+
+def set_color(page, input_id, hex_value):
+    page.evaluate(
+        "([id, v]) => { const el = document.getElementById(id);"
+        " el.value = v; el.dispatchEvent(new Event('input')); }",
+        [input_id, hex_value],
+    )
+
+
+def test_eraser_paints_secondary_color(page, live_server):
+    open_editor(page, live_server)
+    w, h = paint_dims(page)
+    cx, cy = w // 2, h // 2
+
+    set_color(page, "erasecolor", "#00ff00")
+    select_tool(page, "eraser")
+    set_brush_size(page, 10)
+    stroke_at(page, cx, cy)
+    assert pixel(page, cx, cy)[:3] == [0, 255, 0], "eraser paints its secondary color"
+
+    # one undo step: single undo fully reverts the eraser stroke
+    page.locator("#undo").click()
+    assert pixel(page, cx, cy)[:3] != [0, 255, 0]
+
+
+def click_at(page, cx, cy):
+    # A single click whose position maps to canvas pixel (cx, cy).
+    canvas = page.locator("#paint")
+    box = canvas.bounding_box()
+    w, h = paint_dims(page)
+    page.mouse.click(box["x"] + cx / w * box["width"], box["y"] + cy / h * box["height"])
+
+
+def test_flood_fill_fills_contiguous_region(page, live_server):
+    open_editor(page, live_server)
+    w, h = paint_dims(page)
+    cx, cy = w // 2, h // 2
+
+    # Make a solid brush-color blob, then flood it to a new color.
+    set_brush_size(page, 40)
+    stroke_at(page, cx, cy)
+    assert pixel(page, cx, cy)[:3] == BRUSH_RGB
+
+    set_color(page, "color", "#0000ff")
+    select_tool(page, "fill")
+    click_at(page, cx, cy)
+    assert pixel(page, cx, cy)[:3] == [0, 0, 255], "fill recolors the contiguous blob"
+
+    # Fill must SPREAD through the contiguous blob, not just recolor the click
+    # point: a pixel well inside the solid core (clear of the anti-aliased rim)
+    # is also blue...
+    assert pixel(page, cx + 10, cy)[:3] == [0, 0, 255], "fill must spread across the region"
+    # ...and a pixel clearly outside the blob is untouched.
+    corner = pixel(page, 2, 2)
+    assert corner[:3] != [0, 0, 255], "fill must not leak outside the contiguous region"
+
+    # one undo step reverts the fill back to the brush blob
+    page.locator("#undo").click()
+    assert pixel(page, cx, cy)[:3] == BRUSH_RGB
+
+
+def test_flood_fill_noop_when_same_color(page, live_server):
+    # Filling with the color already present adds no undo step.
+    open_editor(page, live_server)
+    w, h = paint_dims(page)
+    cx, cy = w // 2, h // 2
+
+    center = pixel(page, cx, cy)
+    hexc = "#{:02x}{:02x}{:02x}".format(*center[:3])
+    set_color(page, "color", hexc)
+    select_tool(page, "fill")
+    assert page.locator("#undo").is_disabled(), "sanity: no history yet"
+    click_at(page, cx, cy)
+    assert page.locator("#undo").is_disabled(), "no-op fill must not push an undo step"
+
+
+def color_input_value(page):
+    return page.locator("#color").input_value()
+
+
+def test_eyedropper_picks_color_no_undo_and_reverts(page, live_server):
+    open_editor(page, live_server)
+    w, h = paint_dims(page)
+    cx, cy = w // 2, h // 2
+
+    px = pixel(page, cx, cy)
+    expected = "#{:02x}{:02x}{:02x}".format(*px[:3])
+
+    assert page.locator("#undo").is_disabled(), "sanity: no history yet"
+    select_tool(page, "pick")
+    click_at(page, cx, cy)
+
+    assert color_input_value(page).lower() == expected, "eyedropper sets the brush color"
+    assert page.locator("#undo").is_disabled(), "eyedropper must not push an undo step"
+    assert active_tool(page) == "brush", "eyedropper reverts to the previous tool"
+
+
+def test_tool_shortcut_ignored_mid_stroke(page, live_server):
+    open_editor(page, live_server)
+    select_tool(page, "brush")
+    w, h = paint_dims(page)
+    canvas = page.locator("#paint")
+    box = canvas.bounding_box()
+    cx = box["x"] + box["width"] / 2
+    cy = box["y"] + box["height"] / 2
+    page.mouse.move(cx, cy)
+    page.mouse.down()
+    page.keyboard.press("e")  # mid-stroke: must be ignored
+    assert active_tool(page) == "brush", "tool must not switch mid-stroke"
+    page.mouse.move(cx + 5, cy + 5)
+    page.mouse.up()
+    # after the stroke ends, the shortcut works again
+    page.keyboard.press("e")
+    assert active_tool(page) == "eraser", "shortcut works once the stroke ends"
