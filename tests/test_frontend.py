@@ -345,3 +345,24 @@ def test_flood_fill_noop_when_same_color(page, live_server):
     assert page.locator("#undo").is_disabled(), "sanity: no history yet"
     click_at(page, cx, cy)
     assert page.locator("#undo").is_disabled(), "no-op fill must not push an undo step"
+
+
+def color_input_value(page):
+    return page.locator("#color").input_value()
+
+
+def test_eyedropper_picks_color_no_undo_and_reverts(page, live_server):
+    open_editor(page, live_server)
+    w, h = paint_dims(page)
+    cx, cy = w // 2, h // 2
+
+    px = pixel(page, cx, cy)
+    expected = "#{:02x}{:02x}{:02x}".format(*px[:3])
+
+    assert page.locator("#undo").is_disabled(), "sanity: no history yet"
+    select_tool(page, "pick")
+    click_at(page, cx, cy)
+
+    assert color_input_value(page).lower() == expected, "eyedropper sets the brush color"
+    assert page.locator("#undo").is_disabled(), "eyedropper must not push an undo step"
+    assert active_tool(page) == "brush", "eyedropper reverts to the previous tool"

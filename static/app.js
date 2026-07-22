@@ -209,6 +209,16 @@ function floodFill(x, y) {
   return true;
 }
 
+function pickColor(x, y) {
+  const w = paint.width, h = paint.height;
+  if (x < 0 || y < 0 || x >= w || y >= h) return;
+  const d = pctx.getImageData(x, y, 1, 1).data;
+  const hex = "#" + [d[0], d[1], d[2]]
+    .map((v) => v.toString(16).padStart(2, "0")).join("");
+  brushColor = hex;
+  document.getElementById("color").value = hex;
+}
+
 // --- painting ---
 function canvasXY(e) {
   const r = paint.getBoundingClientRect();
@@ -219,6 +229,12 @@ function canvasXY(e) {
 }
 paint.addEventListener("pointerdown", (e) => {
   if (!editSkin) return; // nothing loaded to edit yet
+  if (currentTool === "pick") {
+    const [ex, ey] = canvasXY(e);
+    pickColor(Math.floor(ex), Math.floor(ey));
+    setTool(prevTool);
+    return;
+  }
   if (currentTool === "fill") {
     const [fx, fy] = canvasXY(e);
     if (floodFill(Math.floor(fx), Math.floor(fy))) afterEdit();
