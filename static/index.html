@@ -66,11 +66,12 @@
   #split{display:grid;grid-template-columns:1fr 1fr;height:100%;min-height:0}
   .pane{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--panel)}
   #left{border-right:1px solid var(--line)}
-  .pane-head{display:flex;align-items:center;gap:12px;height:44px;padding:0 12px;
+  .pane-head{display:flex;align-items:center;gap:12px;min-height:44px;padding:6px 12px;
+       flex-wrap:wrap;row-gap:6px;
        background:var(--head);border-bottom:1px solid var(--line)}
   .pane-title{font:600 11px/1 var(--ui);letter-spacing:1.6px;text-transform:uppercase;
        color:var(--faint)}
-  .tools{display:flex;align-items:center;gap:9px}
+  .tools{display:flex;align-items:center;gap:9px;flex-wrap:wrap;row-gap:6px;min-width:0}
   .tool-sep{width:1px;height:20px;background:var(--line-2)}
   .editpath{margin-left:auto;font:11px/1 var(--mono);color:var(--muted);
        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:34ch}

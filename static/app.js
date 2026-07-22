@@ -79,10 +79,14 @@ function rebuild565() {
 }
 
 // Draw a skin image into the paint canvas (sizing it to the image) and refresh
-// both textures. Resets undo history, since it's a fresh image.
-function loadSkinIntoCanvas(url, done) {
+// both textures. Resets undo history, since it's a fresh image. `isCurrent`, if
+// given, is re-checked when the image finishes decoding: image loads are async,
+// so a superseded load whose request was already in flight must not clobber the
+// current model's canvas when its onload finally fires.
+function loadSkinIntoCanvas(url, done, isCurrent) {
   const img = new Image();
   img.onload = () => {
+    if (isCurrent && !isCurrent()) return;
     paint.width = img.naturalWidth;
     paint.height = img.naturalHeight;
     pctx.drawImage(img, 0, 0);
@@ -347,6 +351,11 @@ async function load(path) {
   } catch (e) {
     console.warn("orientation fetch failed", e);
   }
+  // A newer load() started while we awaited: bail before touching any shared
+  // state (flipV, currentPath, the mesh, the paint canvas). Otherwise a
+  // superseded load's skin image finishes last and clobbers the current
+  // model's canvas and currentPath.
+  if (myLoad !== loadToken) return;
   flipV = !!orient.flipV;
   if (flipV) {
     for (let i = 1; i < g.uvs.length; i += 2) g.uvs[i] = 1 - g.uvs[i];
@@ -388,8 +397,11 @@ async function load(path) {
   applyAnimFrame(0);
   updateAnimUi();
 
-  // Show skin0 immediately while the working dir extraction request completes.
-  loadSkinIntoCanvas(skinUrl(path, 0));
+  // Show skin0 immediately while the working dir extraction request completes
+  // (the decoded skin is identical to the working PNG produced by extract
+  // below). Guard the async image load so a superseded load can't clobber the
+  // canvas of a newer one when its onload finally fires.
+  loadSkinIntoCanvas(skinUrl(path, 0), undefined, () => myLoad === loadToken);
 
   // Extract this model's skin so edits can be saved back, and watch it so
   // external-editor changes still hot-reload into the canvas.
@@ -709,6 +721,9 @@ async function doReset() {
     })).json();
     if (myLoad !== loadToken) return; // superseded by a newer load
     if (r.skin) {
+      // Reset re-extracts a pristine copy; reload the currently selected skin
+      // (not always skin 0) so a force-reset respects the active slot. The
+      // on-disk skin is already pristine, so no skin-write here.
       skinFiles = Array.isArray(r.skins) && r.skins.length ? r.skins : [r.skin];
       editDir = r.dir;
       setActiveSkin(Math.min(currentSkinIndex, skinFiles.length - 1), true);

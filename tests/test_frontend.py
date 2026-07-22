@@ -26,6 +26,14 @@ def open_editor(page, base_url):
     page.wait_for_selector("#reset:not([disabled])")
 
 
+def open_editor_with_model(page, base_url, model):
+    page.route("**/api/watch*", lambda route: route.abort())
+    page.goto(base_url)
+    page.locator("#path").fill(f"samples/{model}")
+    page.locator("#load").click()
+    page.wait_for_selector("#reset:not([disabled])")
+
+
 def paint_dims(page):
     return page.evaluate(
         "() => { const p = document.getElementById('paint'); return [p.width, p.height]; }"
@@ -138,3 +146,67 @@ def test_stroke_persists_to_working_skin(page, live_server):
     with page.expect_request("**/api/skin-write") as undo_info:
         page.locator("#undo").click()
     assert undo_info.value.post_data_json["png"].startswith("data:image/png")
+
+
+def test_reset_keeps_selected_skin(page, live_server_factory):
+    # Regression coverage for multi-skin reset: force-extract returns skin0 as
+    # `skin`, but the UI must keep editing the selected skin.
+    open_editor_with_model(page, live_server_factory("Paper2.MDL", "Bad2.MDL"), "Bad2.MDL")
+    page.wait_for_function("document.getElementById('skinselect').options.length === 7")
+    page.wait_for_function(
+        "() => { const p = document.getElementById('paint');"
+        " return p.width === 640 && p.height === 400; }"
+    )
+
+    page.evaluate(
+        "() => { const p = document.getElementById('paint');"
+        " window.__skin0 = p.getContext('2d').getImageData(0, 0, p.width, p.height); }"
+    )
+    page.locator("#skinselect").select_option("1")
+    page.wait_for_function(
+        "() => {"
+        " const p = document.getElementById('paint');"
+        " const d = p.getContext('2d').getImageData(0, 0, p.width, p.height).data;"
+        " const s0 = window.__skin0 && window.__skin0.data;"
+        " if (!s0 || s0.length !== d.length) return false;"
+        " for (let i = 0; i < d.length; i += 4) {"
+        "   if (d[i] !== s0[i] || d[i + 1] !== s0[i + 1] || d[i + 2] !== s0[i + 2]) return true;"
+        " }"
+        " return false;"
+        "}"
+    )
+    diff = page.evaluate(
+        "() => {"
+        " const p = document.getElementById('paint');"
+        " const d = p.getContext('2d').getImageData(0, 0, p.width, p.height).data;"
+        " const s0 = window.__skin0.data;"
+        " for (let i = 0; i < d.length; i += 4) {"
+        "   if (d[i] !== s0[i] || d[i + 1] !== s0[i + 1] || d[i + 2] !== s0[i + 2]) {"
+        "     return { x: (i / 4) % p.width, y: Math.floor((i / 4) / p.width),"
+        "       skin0: [s0[i], s0[i + 1], s0[i + 2], s0[i + 3]],"
+        "       skin1: [d[i], d[i + 1], d[i + 2], d[i + 3]] };"
+        "   }"
+        " }"
+        " return null;"
+        "}"
+    )
+    assert diff, "Bad2 skin 1 should differ from skin 0 somewhere"
+    assert diff["skin0"] != diff["skin1"]
+
+    set_brush_size(page, 8)
+    stroke_at(page, diff["x"], diff["y"])
+    assert pixel(page, diff["x"], diff["y"])[:3] == BRUSH_RGB
+
+    page.locator("#reset").click()
+    page.locator("#reset", has_text="Confirm reset?").click()
+    page.wait_for_function(
+        "([x, y, expected]) => {"
+        " const d = document.getElementById('paint').getContext('2d')"
+        "   .getImageData(x, y, 1, 1).data;"
+        " return d[0] === expected[0] && d[1] === expected[1] && d[2] === expected[2];"
+        "}",
+        arg=[diff["x"], diff["y"], diff["skin1"]],
+    )
+
+    assert page.locator("#skinselect").input_value() == "1"
+    assert pixel(page, diff["x"], diff["y"]) == diff["skin1"]
