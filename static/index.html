@@ -43,6 +43,8 @@
   .btn:active{transform:translateY(1px)}
   .btn:disabled{opacity:.38;cursor:not-allowed}
   .btn-icon{padding:8px 11px}
+  .btn-ico{padding:7px;display:inline-flex}
+  .tool-ico{width:18px;height:18px;display:block;pointer-events:none}
   .btn-go{background:#1f2937;border-color:#33465f;color:#cfe0f5}
   .btn-go:hover{background:#25303f;border-color:#42597a}
   .toggle[aria-pressed="true"]{background:var(--accent-weak);border-color:var(--accent-line);
@@ -165,10 +167,10 @@
       <div class="pane-head">
         <span class="pane-title">Skin</span>
         <div class="tools">
-          <button id="tool-brush" class="btn btn-icon toggle" aria-pressed="true" title="Brush (B)">Brush</button>
-          <button id="tool-eraser" class="btn btn-icon toggle" aria-pressed="false" title="Eraser (E)">Eraser</button>
-          <button id="tool-fill" class="btn btn-icon toggle" aria-pressed="false" title="Fill (G)">Fill</button>
-          <button id="tool-pick" class="btn btn-icon toggle" aria-pressed="false" title="Eyedropper (I)">Pick</button>
+          <button id="tool-brush" class="btn btn-ico toggle" aria-pressed="true" aria-label="Brush" title="Brush (B)"><svg class="tool-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.06 11.9l8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/></svg></button>
+          <button id="tool-eraser" class="btn btn-ico toggle" aria-pressed="false" aria-label="Eraser" title="Eraser (E)"><svg class="tool-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg></button>
+          <button id="tool-fill" class="btn btn-ico toggle" aria-pressed="false" aria-label="Fill" title="Fill (G)"><svg class="tool-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z"/><path d="m5 2 5 5"/><path d="M2 13h15"/><path d="M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z"/></svg></button>
+          <button id="tool-pick" class="btn btn-ico toggle" aria-pressed="false" aria-label="Eyedropper" title="Eyedropper (I)"><svg class="tool-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/></svg></button>
           <span class="tool-sep"></span>
           <label class="swatch" title="Brush color"><input type="color" id="color" value="#ff2d55"></label>
           <label class="swatch" title="Eraser color"><input type="color" id="erasecolor" value="#ffffff"></label>
@@ -177,8 +179,8 @@
             <output id="brushval">6</output>
           </label>
           <span class="tool-sep"></span>
-          <button id="undo" class="btn btn-icon" title="Undo (Ctrl/Cmd+Z)" disabled>Undo</button>
-          <button id="redo" class="btn btn-icon" title="Redo (Ctrl/Cmd+Y)" disabled>Redo</button>
+          <button id="undo" class="btn btn-ico" aria-label="Undo" title="Undo (Ctrl/Cmd+Z)" disabled><svg class="tool-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
+          <button id="redo" class="btn btn-ico" aria-label="Redo" title="Redo (Ctrl/Cmd+Y)" disabled><svg class="tool-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
           <span class="tool-sep"></span>
           <select id="skinselect" title="Active skin"></select>
           <button id="skinadd" class="btn btn-icon" title="Add a skin">+ Skin</button>
