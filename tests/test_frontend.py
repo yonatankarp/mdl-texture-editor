@@ -152,7 +152,7 @@ def test_reset_keeps_selected_skin(page, live_server_factory):
     # Regression coverage for multi-skin reset: force-extract returns skin0 as
     # `skin`, but the UI must keep editing the selected skin.
     open_editor_with_model(page, live_server_factory("Paper2.MDL", "Bad2.MDL"), "Bad2.MDL")
-    page.wait_for_function("document.getElementById('skinsel').options.length === 7")
+    page.wait_for_function("document.getElementById('skinselect').options.length === 7")
     page.wait_for_function(
         "() => { const p = document.getElementById('paint');"
         " return p.width === 640 && p.height === 400; }"
@@ -162,7 +162,7 @@ def test_reset_keeps_selected_skin(page, live_server_factory):
         "() => { const p = document.getElementById('paint');"
         " window.__skin0 = p.getContext('2d').getImageData(0, 0, p.width, p.height); }"
     )
-    page.locator("#skinsel").select_option("1")
+    page.locator("#skinselect").select_option("1")
     page.wait_for_function(
         "() => {"
         " const p = document.getElementById('paint');"
@@ -208,5 +208,24 @@ def test_reset_keeps_selected_skin(page, live_server_factory):
         arg=[diff["x"], diff["y"], diff["skin1"]],
     )
 
-    assert page.locator("#skinsel").input_value() == "1"
+    assert page.locator("#skinselect").input_value() == "1"
     assert pixel(page, diff["x"], diff["y"]) == diff["skin1"]
+
+
+def test_animated_model_stands_upright(page, live_server_factory):
+    # Regression: MDL geometry is Z-up and the loader rotates it -90deg about X
+    # into Three.js's Y-up world so figures stand. applyAnimFrame() rewrites the
+    # position attribute every load (frame 0) and during playback, so it must
+    # apply the SAME rotation or the model reverts to Z-up and lies on its side.
+    # 3D orientation has no DOM projection, so read the loaded mesh's geometry
+    # bounding box via the debug handle. Bad2 is a 20-frame MDL3 (A5) figure.
+    open_editor_with_model(page, live_server_factory("Paper2.MDL", "Bad2.MDL"), "Bad2.MDL")
+    size = page.evaluate(
+        "() => { const m = window.__model; m.geometry.computeBoundingBox();"
+        " const b = m.geometry.boundingBox;"
+        " return [b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z]; }"
+    )
+    dx, dy, dz = size
+    # Bad2 is a humanoid: its tallest extent is its height. Standing => height
+    # is along Y; lying on its side (the bug) => height is along Z.
+    assert dy > dz and dy > dx, f"model not upright: extents dx={dx:.1f} dy={dy:.1f} dz={dz:.1f}"

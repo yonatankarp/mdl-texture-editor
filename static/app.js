@@ -26,10 +26,17 @@ let flipV = false;      // per-model vertical orientation override (persisted)
 let currentPath = null; // path of the model currently loaded
 let editSkin = null;    // working skin PNG (repo-relative) currently being edited
 let editDir = null;     // working dir the skin was extracted to
-let skinPaths = [];     // working PNG (repo-relative) per skin index for this model
+let skinFiles = [];     // working skin files (skin0.png, skin1.png, ...)
 let currentSkinIndex = 0;
 let watchSource = null; // per-model file watcher (recreated on each load)
 let suppressWatchUntil = 0; // ignore our own skin-write echoes until this time
+let animFrames = [];    // non-indexed position arrays (one per frame)
+let animPlaying = false;
+let animFps = 8;
+let animFrame = 0;
+let lastAnimMs = 0;
+let paperImageData = null;
+let paperImageName = "";
 
 // paint state
 let brushColor = document.getElementById("color").value;
@@ -38,8 +45,8 @@ let drawing = false, lastX = 0, lastY = 0;
 const undoStack = [], redoStack = [];
 const MAX_HISTORY = 30;
 
-function skinUrl(path) {
-  return "/api/skin?path=" + encodeURIComponent(path) + "&index=0";
+function skinUrl(path, index) {
+  return "/api/skin?path=" + encodeURIComponent(path) + "&index=" + encodeURIComponent(index);
 }
 
 // Quantizes an ImageData buffer in place to RGB565 precision, matching
@@ -262,10 +269,83 @@ function showEditPath(dir) {
   if (el) el.textContent = dir ? "editing: " + dir : "";
 }
 
+function updateSkinUi() {
+  const sel = document.getElementById("skinselect");
+  const addBtn = document.getElementById("skinadd");
+  const removeBtn = document.getElementById("skinremove");
+  sel.innerHTML = "";
+  for (let i = 0; i < skinFiles.length; i++) {
+    const opt = document.createElement("option");
+    opt.value = String(i);
+    opt.textContent = "Skin " + i;
+    sel.appendChild(opt);
+  }
+  sel.disabled = skinFiles.length <= 1;
+  addBtn.disabled = !currentPath || skinFiles.length === 0;
+  removeBtn.disabled = !currentPath || skinFiles.length <= 1;
+  if (skinFiles.length) {
+    currentSkinIndex = Math.max(0, Math.min(currentSkinIndex, skinFiles.length - 1));
+    sel.value = String(currentSkinIndex);
+  }
+}
+
+function loadActiveSkinFromDisk() {
+  if (!editSkin) return;
+  loadSkinIntoCanvas("/api/pngskin?file=" + encodeURIComponent(editSkin) + "&_=" + Date.now());
+}
+
+function setActiveSkin(index, fromDisk = true) {
+  if (!skinFiles.length) {
+    editSkin = null;
+    currentSkinIndex = 0;
+    updateSkinUi();
+    return;
+  }
+  currentSkinIndex = Math.max(0, Math.min(index, skinFiles.length - 1));
+  editSkin = skinFiles[currentSkinIndex];
+  subscribeWatch(editSkin);
+  updateSkinUi();
+  if (fromDisk) loadActiveSkinFromDisk();
+}
+
+function updateAnimUi() {
+  const slider = document.getElementById("animframe");
+  const label = document.getElementById("animlabel");
+  const play = document.getElementById("animplay");
+  const max = Math.max(0, animFrames.length - 1);
+  slider.max = String(max);
+  slider.value = String(Math.min(animFrame, max));
+  label.textContent = "frame " + Math.min(animFrame, max) + "/" + max;
+  play.disabled = animFrames.length <= 1;
+  play.setAttribute("aria-pressed", String(animPlaying));
+}
+
+function applyAnimFrame(frameIdx) {
+  if (!mesh || !animFrames.length) return;
+  const idx = Math.max(0, Math.min(frameIdx, animFrames.length - 1));
+  const arr = animFrames[idx];
+  const pos = mesh.geometry.getAttribute("position");
+  // Frame positions come from the server in the model's native Z-up space. The
+  // initial geometry is baked into Three.js's Y-up world via geo.rotateX(-90),
+  // so each frame must get the SAME rotation here — otherwise writing the raw
+  // Z-up positions reverts the mesh to lying on its side. rotateX(-90) maps
+  // (x, y, z) -> (x, z, -y).
+  const out = pos.array;
+  for (let i = 0; i < arr.length; i += 3) {
+    out[i] = arr[i];
+    out[i + 1] = arr[i + 2];
+    out[i + 2] = -arr[i + 1];
+  }
+  pos.needsUpdate = true;
+  mesh.geometry.computeBoundingSphere();
+  animFrame = idx;
+  updateAnimUi();
+}
+
 async function load(path) {
   const myLoad = ++loadToken;
   disarmReset();
-  const resp = await fetch("/api/model?path=" + encodeURIComponent(path));
+  const resp = await fetch("/api/model?path=" + encodeURIComponent(path) + "&includeFrames=1");
   const g = await resp.json();
   if (!resp.ok || !g.positions) {
     showMsg("Can't open this model: " + (g.error || ("HTTP " + resp.status)));
@@ -313,16 +393,26 @@ async function load(path) {
     if (mat565) mat565.dispose();
   }
   mesh = new THREE.Mesh(geo, mat);
+  mesh.name = "model";
+  window.__model = mesh; // debug/test handle for inspecting the loaded model
   scene.add(mesh);
   frameCamera(geo);
   fullMat = mat;
   mat565 = q;
   mesh.material = mode565 ? mat565 : fullMat;
   applyWire();
+  animFrames = Array.isArray(g.frames) && g.frames.length ? g.frames : [g.positions];
+  animPlaying = false;
+  animFrame = 0;
+  lastAnimMs = performance.now();
+  applyAnimFrame(0);
+  updateAnimUi();
 
-  // Show the current skin in the paint canvas right away (the decoded skin is
-  // identical to the working PNG produced by extract below).
-  loadSkinIntoCanvas(skinUrl(path), undefined, () => myLoad === loadToken);
+  // Show skin0 immediately while the working dir extraction request completes
+  // (the decoded skin is identical to the working PNG produced by extract
+  // below). Guard the async image load so a superseded load can't clobber the
+  // canvas of a newer one when its onload finally fires.
+  loadSkinIntoCanvas(skinUrl(path, 0), undefined, () => myLoad === loadToken);
 
   // Extract this model's skin so edits can be saved back, and watch it so
   // external-editor changes still hot-reload into the canvas.
@@ -334,17 +424,15 @@ async function load(path) {
     })).json();
     if (myLoad !== loadToken) return; // superseded by a newer load
     if (ex.skin) {
+      skinFiles = Array.isArray(ex.skins) && ex.skins.length ? ex.skins : [ex.skin];
       editDir = ex.dir;
-      skinPaths = ex.skins && ex.skins.length ? ex.skins : [ex.skin];
-      currentSkinIndex = 0;
-      editSkin = skinPaths[0];
-      populateSkinSelector(ex.numskins || skinPaths.length);
-      subscribeWatch(editSkin);
+      setActiveSkin(0, true);
       showEditPath(editDir);
     } else {
       editSkin = editDir = null;
-      skinPaths = [];
-      populateSkinSelector(1);
+      skinFiles = [];
+      currentSkinIndex = 0;
+      updateSkinUi();
       showEditPath(null);
       console.warn("extract failed", ex.error);
     }
@@ -352,8 +440,9 @@ async function load(path) {
   } catch (e) {
     if (myLoad !== loadToken) return;
     editSkin = editDir = null;
-    skinPaths = [];
-    populateSkinSelector(1);
+    skinFiles = [];
+    currentSkinIndex = 0;
+    updateSkinUi();
     showEditPath(null);
     updateResetButton();
     console.warn("extract failed", e);
@@ -373,37 +462,6 @@ function subscribeWatch(file) {
   watchSource = new EventSource("/api/watch?file=" + encodeURIComponent(file));
   watchSource.onmessage = (e) => { if (e.data === "changed") reapplySkinFromPng(); };
 }
-
-// --- skin selector (multi-skin models) ---
-const skinsel = document.getElementById("skinsel");
-
-// Rebuild the dropdown for a model with `count` skins. Disabled (grayed) for
-// single-skin models so the control is always present but only interactive
-// when there's a choice to make.
-function populateSkinSelector(count) {
-  skinsel.replaceChildren();
-  for (let i = 0; i < count; i++) {
-    const opt = document.createElement("option");
-    opt.value = String(i);
-    opt.textContent = "Skin " + i;
-    skinsel.appendChild(opt);
-  }
-  skinsel.value = "0";
-  skinsel.disabled = count <= 1;
-}
-
-// Point the paint canvas and file watcher at skin `i`. Committed pixels are
-// already on disk (every stroke/undo persists), so switching only reloads the
-// working PNG and retargets the watcher; the per-canvas undo stack resets, the
-// same as loading a new model.
-function switchSkin(i) {
-  if (i < 0 || i >= skinPaths.length || i === currentSkinIndex) return;
-  currentSkinIndex = i;
-  editSkin = skinPaths[i];
-  loadSkinIntoCanvas("/api/pngskin?file=" + encodeURIComponent(editSkin) + "&_=" + Date.now());
-  subscribeWatch(editSkin);
-}
-skinsel.addEventListener("change", (e) => switchSkin(+e.target.value));
 
 document.getElementById("load").onclick = () =>
   load(document.getElementById("path").value);
@@ -432,6 +490,62 @@ document.getElementById("wire").onclick = (e) => {
   wire = !wire;
   applyWire();
   e.currentTarget.setAttribute("aria-pressed", String(wire));
+};
+
+document.getElementById("animplay").onclick = (e) => {
+  animPlaying = !animPlaying;
+  lastAnimMs = performance.now();
+  e.currentTarget.setAttribute("aria-pressed", String(animPlaying));
+  updateAnimUi();
+};
+
+document.getElementById("animframe").addEventListener("input", (e) => {
+  animPlaying = false;
+  applyAnimFrame(+e.target.value);
+});
+
+document.getElementById("skinselect").addEventListener("change", (e) => {
+  setActiveSkin(+e.target.value, true);
+});
+
+document.getElementById("skinadd").onclick = async () => {
+  if (!currentPath) return;
+  try {
+    const r = await (await fetch("/api/skin-add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: currentPath, fromIndex: currentSkinIndex }),
+    })).json();
+    if (!r.ok) {
+      showMsg("Add skin failed: " + (r.error || "unknown error"));
+      return;
+    }
+    skinFiles = r.skins || skinFiles;
+    setActiveSkin(r.index ?? (skinFiles.length - 1), true);
+    showMsg("");
+  } catch (err) {
+    showMsg("Add skin failed: " + err);
+  }
+};
+
+document.getElementById("skinremove").onclick = async () => {
+  if (!currentPath || skinFiles.length <= 1) return;
+  try {
+    const r = await (await fetch("/api/skin-remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: currentPath, index: currentSkinIndex }),
+    })).json();
+    if (!r.ok) {
+      showMsg("Remove skin failed: " + (r.error || "unknown error"));
+      return;
+    }
+    skinFiles = r.skins || [];
+    setActiveSkin(r.index ?? 0, true);
+    showMsg("");
+  } catch (err) {
+    showMsg("Remove skin failed: " + err);
+  }
 };
 
 // Flip V: invert the model's texture V instantly and persist per model.
@@ -495,6 +609,92 @@ document.getElementById("reveal").onclick = async () => {
   }
 };
 
+document.getElementById("up2x").onclick = async (e) => {
+  if (!currentPath || !editSkin) return;
+  const btn = e.currentTarget;
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Upscaling…";
+  try {
+    const r = await (await fetch("/api/upscale", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: currentPath, factor: 2, method: "nearest" }),
+    })).json();
+    if (r.ok) {
+      showMsg("");
+      // Force-refresh from disk so both paint canvas and model textures update.
+      loadSkinIntoCanvas("/api/pngskin?file=" + encodeURIComponent(editSkin) + "&_=" + Date.now());
+    } else {
+      showMsg("Upscale failed: " + (r.error || "unknown error"));
+    }
+  } catch (err) {
+    showMsg("Upscale failed: " + err);
+  }
+  btn.textContent = label;
+  btn.disabled = false;
+};
+
+document.getElementById("paperpick").onclick = () => {
+  document.getElementById("paperfile").click();
+};
+
+document.getElementById("paperfile").addEventListener("change", (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  paperImageName = f.name;
+  document.getElementById("paperimg").textContent = f.name;
+  const rd = new FileReader();
+  rd.onload = () => { paperImageData = rd.result; };
+  rd.readAsDataURL(f);
+});
+
+document.getElementById("papergen").onclick = async (e) => {
+  if (!paperImageData) {
+    showMsg("Pick a source image first.");
+    return;
+  }
+  const outPath = document.getElementById("paperout").value.trim();
+  const heightRef = document.getElementById("paperheightsrc").value.trim();
+  const animSrc = document.getElementById("paperanimsrc").value.trim();
+  if (!outPath) {
+    showMsg("Set an output .MDL path first.");
+    return;
+  }
+  const btn = e.currentTarget;
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Generating…";
+  try {
+    const r = await (await fetch("/api/paper-from-image", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        imageData: paperImageData,
+        outPath,
+        grid: 8,
+        alphaThreshold: 10,
+        pixelScale: 1.0,
+        targetHeightModelPath: heightRef || null,
+        animSourceModelPath: animSrc || null,
+      }),
+    })).json();
+    if (r.ok) {
+      const hInfo = r.heightMatchedTo ? " Height matched." : "";
+      const aInfo = r.numframes > 1 ? (" Frames: " + r.numframes + ".") : "";
+      showMsg("Generated " + outPath + " from " + paperImageName + "." + hInfo + aInfo + " Loading it now.");
+      document.getElementById("path").value = outPath;
+      load(outPath);
+    } else {
+      showMsg("Paper MDL generation failed: " + (r.error || "unknown error"));
+    }
+  } catch (err) {
+    showMsg("Paper MDL generation failed: " + err);
+  }
+  btn.textContent = label;
+  btn.disabled = false;
+};
+
 // --- reset skin ---
 // Restore the pristine skin, discarding unsaved edits. Uses a two-step inline
 // confirm rather than a native dialog: the first click arms the button for 3s
@@ -532,17 +732,12 @@ async function doReset() {
     })).json();
     if (myLoad !== loadToken) return; // superseded by a newer load
     if (r.skin) {
+      // Reset re-extracts a pristine copy; reload the currently selected skin
+      // (not always skin 0) so a force-reset respects the active slot. The
+      // on-disk skin is already pristine, so no skin-write here.
+      skinFiles = Array.isArray(r.skins) && r.skins.length ? r.skins : [r.skin];
       editDir = r.dir;
-      skinPaths = r.skins && r.skins.length ? r.skins : [r.skin];
-      const nextIndex = Math.min(currentSkinIndex, skinPaths.length - 1);
-      populateSkinSelector(r.numskins || skinPaths.length);
-      currentSkinIndex = nextIndex;
-      skinsel.value = String(currentSkinIndex);
-      editSkin = skinPaths[currentSkinIndex];
-      subscribeWatch(editSkin);
-      // loadSkinIntoCanvas resizes, redraws, rebuilds both textures and clears
-      // undo/redo. The on-disk skin is already pristine, so no skin-write here.
-      loadSkinIntoCanvas("/api/pngskin?file=" + encodeURIComponent(editSkin) + "&_=" + Date.now());
+      setActiveSkin(Math.min(currentSkinIndex, skinFiles.length - 1), true);
       showMsg("");
     } else {
       showMsg("Reset failed: " + (r.error || "unknown error"));
@@ -565,5 +760,17 @@ resetBtn.addEventListener("click", () => {
 });
 
 resize();
+updateSkinUi();
 load(document.getElementById("path").value);
-renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+renderer.setAnimationLoop(() => {
+  const now = performance.now();
+  if (animPlaying && animFrames.length > 1 && mesh) {
+    const stepMs = 1000 / Math.max(1, animFps);
+    if (now - lastAnimMs >= stepMs) {
+      lastAnimMs = now;
+      applyAnimFrame((animFrame + 1) % animFrames.length);
+    }
+  }
+  controls.update();
+  renderer.render(scene, camera);
+});

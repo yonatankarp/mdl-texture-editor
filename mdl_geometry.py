@@ -17,19 +17,49 @@ import struct
 HDR = 84
 
 
-def parse_geometry(path):
+def parse_geometry(path, include_frames=False):
     b = open(path, "rb").read()
     magic = b[:4]
     if magic == b"IDPO":
-        return _parse_idpo(b)
+        return _parse_idpo(b, include_frames=include_frames)
     if magic in (b"MDL5", b"MDL3"):
-        return _parse_a5(b, magic)
+        return _parse_a5(b, magic, include_frames=include_frames)
     raise ValueError(
         f"unsupported MDL format: magic={magic!r} (only IDPO, MDL3, MDL5)"
     )
 
 
-def _parse_idpo(b):
+def _decode_idpo_frame(b, off, numverts, scale, trans):
+    """Decode one IDPO frame record, returning (positions, next_off).
+
+    For grouped frames (ftype != 0), this decodes the first sub-frame.
+    """
+    (ftype,) = struct.unpack_from("<i", b, off)
+    voff = off + 4
+    if ftype != 0:
+        # frame group: numframes int32, min trivertx(4), max trivertx(4),
+        # times[n] float, then n sub-frames. We decode the first sub-frame for
+        # preview purposes.
+        (n,) = struct.unpack_from("<i", b, voff)
+        voff += 4 + 4 + 4 + n * 4
+    frame_base = voff
+    # skip bboxmin trivertx(4), bboxmax trivertx(4), name(16)
+    voff += 4 + 4 + 16
+    packed = []
+    for i in range(numverts):
+        packed.append(struct.unpack_from("<4B", b, voff + i * 4)[:3])
+    positions = []
+    for px, py, pz in packed:
+        positions.append((
+            scale[0] * px + trans[0],
+            -(scale[1] * py + trans[1]),  # Quake LH -> RH
+            scale[2] * pz + trans[2],
+        ))
+    next_off = frame_base + (4 + 4 + 16 + numverts * 4)
+    return positions, next_off
+
+
+def _parse_idpo(b, include_frames=False):
     scale = struct.unpack_from("<3f", b, 8)
     trans = struct.unpack_from("<3f", b, 20)
     numskins, skin_w, skin_h, numverts, numtris, numframes = struct.unpack_from("<6i", b, 48)
@@ -53,30 +83,24 @@ def _parse_idpo(b):
         tris.append(struct.unpack_from("<4i", b, off + i * 16))
     off += numtris * 16
 
-    # frame 0 vertex positions (packed uint8 x,y,z + normal index)
-    (ftype,) = struct.unpack_from("<i", b, off)
-    voff = off + 4
-    if ftype != 0:
-        # frame group: numframes int32, min trivertx(4), max trivertx(4),
-        # times[n] float, then frames; take the first sub-frame.
-        (n,) = struct.unpack_from("<i", b, voff)
-        voff += 4 + 4 + 4 + n * 4
-    # skip bboxmin trivertx(4), bboxmax trivertx(4), name(16)
-    voff += 4 + 4 + 16
-    packed = []
-    for i in range(numverts):
-        packed.append(struct.unpack_from("<4B", b, voff + i * 4)[:3])
+    # The default /api/model path only needs frame 0 for positions/uvs;
+    # decode the full frame set only when the caller asks for animation.
+    if include_frames:
+        frame_positions = []
+        frame_off = off
+        for _ in range(numframes):
+            fpos, frame_off = _decode_idpo_frame(b, frame_off, numverts, scale, trans)
+            frame_positions.append(fpos)
+        packed0 = frame_positions[0]
+    else:
+        packed0, _ = _decode_idpo_frame(b, off, numverts, scale, trans)
 
     positions = []
     uvs = []
     for facesfront, a, bb, c in tris:
         for vi in (a, bb, c):
-            px, py, pz = packed[vi]
-            positions.extend((
-                scale[0] * px + trans[0],
-                -(scale[1] * py + trans[1]),  # negate Y: Quake left-handed -> right-handed
-                scale[2] * pz + trans[2],
-            ))
+            x, y, z = packed0[vi]
+            positions.extend((x, y, z))
             onseam, s, t = stverts[vi]
             if onseam and not facesfront:
                 s += skin_w // 2
@@ -87,14 +111,25 @@ def _parse_idpo(b):
             # per-model orientation toggle. Matches the A5 path.
             uvs.extend(((s + 0.5) / skin_w, 1.0 - (t + 0.5) / skin_h))
 
-    return {
+    out = {
         "format": "IDPO",
         "numtris": numtris,
+        "numframes": numframes,
         "skin_w": skin_w,
         "skin_h": skin_h,
         "positions": positions,
         "uvs": uvs,
     }
+    if include_frames:
+        out["frames"] = []
+        for verts in frame_positions:
+            fflat = []
+            for _facesfront, a, bb, c in tris:
+                for vi in (a, bb, c):
+                    x, y, z = verts[vi]
+                    fflat.extend((x, y, z))
+            out["frames"].append(fflat)
+    return out
 
 
 # A5 skin color types -> bytes per pixel.
@@ -124,7 +159,26 @@ def _a5_skin_block_end(b, magic, numskins, sw, sh):
     return off
 
 
-def _parse_a5(b, magic):
+def _decode_a5_frame_vertices(b, off, numverts, magic):
+    """Decode one A5 frame record, returning (verts, next_off)."""
+    vsz = 8 if magic == b"MDL5" else 4
+    # type is currently ignored; these models use simple frames in practice.
+    _ftype = struct.unpack_from("<i", b, off)[0]
+    voff = off + 4 + 2 * vsz + 16
+    verts = []
+    if magic == b"MDL5":
+        for i in range(numverts):
+            x, y, z, _n = struct.unpack_from("<4H", b, voff + i * 8)
+            verts.append((x, y, z))
+    else:
+        for i in range(numverts):
+            x, y, z, _n = struct.unpack_from("<4B", b, voff + i * 4)
+            verts.append((x, y, z))
+    next_off = off + 4 + 2 * vsz + 16 + numverts * vsz
+    return verts, next_off
+
+
+def _parse_a5(b, magic, include_frames=False):
     scale = struct.unpack_from("<3f", b, 8)
     trans = struct.unpack_from("<3f", b, 20)
     # A5 adds a 7th count, num_stverts, in Quake's synctype slot (offset 72).
@@ -150,20 +204,17 @@ def _parse_a5(b, magic):
     for i in range(numtris):
         tris.append(struct.unpack_from("<6h", b, tri_off + i * 12))
 
-    # frame 0 vertex positions. Vertex is uint16 x,y,z (+2) for MDL5, uint8
-    # x,y,z (+1) for MDL3. Frame header = type(4) + bbox_min + bbox_max +
-    # name(16), where each bbox corner is one vertex-sized record.
-    vsz = 8 if magic == b"MDL5" else 4
-    voff = tri_off + numtris * 12 + 4 + 2 * vsz + 16
-    verts = []
-    if magic == b"MDL5":
-        for i in range(numverts):
-            x, y, z, _n = struct.unpack_from("<4H", b, voff + i * 8)
-            verts.append((x, y, z))
+    # The default /api/model path only needs frame 0 for positions/uvs;
+    # decode the full frame set only when the caller asks for animation.
+    frame_off = tri_off + numtris * 12
+    if include_frames:
+        frame_vertices = []
+        for _ in range(numframes):
+            verts, frame_off = _decode_a5_frame_vertices(b, frame_off, numverts, magic)
+            frame_vertices.append(verts)
+        verts0 = frame_vertices[0]
     else:
-        for i in range(numverts):
-            x, y, z, _n = struct.unpack_from("<4B", b, voff + i * 4)
-            verts.append((x, y, z))
+        verts0, _ = _decode_a5_frame_vertices(b, frame_off, numverts, magic)
 
     positions = []
     uvs = []
@@ -181,7 +232,7 @@ def _parse_a5(b, magic):
                     f"{magic.decode()}: vertex index out of range "
                     f"(pos {vi}/{numverts}, skin {si}/{num_stverts})"
                 )
-            x, y, z = verts[vi]
+            x, y, z = verts0[vi]
             positions.extend((
                 scale[0] * x + trans[0],
                 scale[1] * y + trans[1],
@@ -192,11 +243,35 @@ def _parse_a5(b, magic):
             # so V is flipped (otherwise the texture maps head-to-foot inverted).
             uvs.extend(((u + 0.5) / skin_w, 1.0 - (v + 0.5) / skin_h))
 
-    return {
+    out = {
         "format": magic.decode(),
         "numtris": numtris,
+        "numframes": numframes,
         "skin_w": skin_w,
         "skin_h": skin_h,
         "positions": positions,
         "uvs": uvs,
     }
+    if include_frames:
+        out["frames"] = []
+        for verts in frame_vertices:
+            fflat = []
+            for tri in tris:
+                xyz_idx = tri[0:3]
+                st_idx = tri[3:6]
+                for k in range(3):
+                    vi = xyz_idx[k]
+                    si = st_idx[k]
+                    if not (0 <= vi < numverts and 0 <= si < num_stverts):
+                        raise ValueError(
+                            f"{magic.decode()}: vertex index out of range "
+                            f"(pos {vi}/{numverts}, skin {si}/{num_stverts})"
+                        )
+                    x, y, z = verts[vi]
+                    fflat.extend((
+                        scale[0] * x + trans[0],
+                        scale[1] * y + trans[1],
+                        scale[2] * z + trans[2],
+                    ))
+            out["frames"].append(fflat)
+    return out

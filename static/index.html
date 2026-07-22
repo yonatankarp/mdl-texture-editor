@@ -54,21 +54,24 @@
 
   #path{font:13px/1 var(--mono);color:var(--text);background:#0a0d12;
         border:1px solid var(--line-2);border-radius:7px;padding:9px 11px;min-width:200px}
+  #paperout{font:12px/1 var(--mono);color:var(--text);background:#0a0d12;
+        border:1px solid var(--line-2);border-radius:7px;padding:8px 10px;min-width:180px}
+  #paperheightsrc,#paperanimsrc{font:12px/1 var(--mono);color:var(--text);background:#0a0d12;
+        border:1px solid var(--line-2);border-radius:7px;padding:8px 10px;min-width:180px}
+  #skinselect{font:12px/1 var(--mono);color:var(--text);background:#0a0d12;
+       border:1px solid var(--line-2);border-radius:6px;padding:6px 8px;min-width:92px}
+  .chip{font:11px/1 var(--mono);color:var(--muted);max-width:22ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
   /* split panes */
   #split{display:grid;grid-template-columns:1fr 1fr;height:100%;min-height:0}
   .pane{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--panel)}
   #left{border-right:1px solid var(--line)}
-  .pane-head{display:flex;align-items:center;gap:12px;height:44px;padding:0 12px;
+  .pane-head{display:flex;align-items:center;gap:12px;min-height:44px;padding:6px 12px;
+       flex-wrap:wrap;row-gap:6px;
        background:var(--head);border-bottom:1px solid var(--line)}
   .pane-title{font:600 11px/1 var(--ui);letter-spacing:1.6px;text-transform:uppercase;
        color:var(--faint)}
-  .skinsel{font:500 12px/1 var(--ui);letter-spacing:.2px;color:var(--text);
-       background:#1a2029;border:1px solid var(--line-2);border-radius:7px;
-       padding:7px 9px;cursor:pointer}
-  .skinsel:hover:not(:disabled){background:#212936;border-color:#3a4454}
-  .skinsel:disabled{opacity:.38;cursor:not-allowed}
-  .tools{display:flex;align-items:center;gap:9px}
+  .tools{display:flex;align-items:center;gap:9px;flex-wrap:wrap;row-gap:6px;min-width:0}
   .tool-sep{width:1px;height:20px;background:var(--line-2)}
   .editpath{margin-left:auto;font:11px/1 var(--mono);color:var(--muted);
        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:34ch}
@@ -141,8 +144,19 @@
     </div>
     <div class="divider"></div>
     <div class="group">
+      <button id="up2x" class="btn">Upscale x2</button>
       <button id="reveal" class="btn">Reveal folder</button>
       <button id="save" class="btn btn-primary">Save to .MDL</button>
+    </div>
+    <div class="divider"></div>
+    <div class="group">
+      <input id="paperfile" type="file" accept=".png,.jpg,.jpeg,.webp,.bmp" hidden>
+      <button id="paperpick" class="btn">Pick image</button>
+      <span id="paperimg" class="chip"></span>
+      <input id="paperout" value="samples/paper_generated.mdl" spellcheck="false" aria-label="Generated MDL output path">
+      <input id="paperheightsrc" value="samples/PipSid.MDL" spellcheck="false" aria-label="Reference model for height match">
+      <input id="paperanimsrc" value="samples/PipSid.MDL" spellcheck="false" aria-label="Animation donor model">
+      <button id="papergen" class="btn">Image → Paper MDL</button>
     </div>
   </header>
 
@@ -150,9 +164,6 @@
     <section id="left" class="pane">
       <div class="pane-head">
         <span class="pane-title">Skin</span>
-        <select id="skinsel" class="skinsel" disabled aria-label="Select skin to edit">
-          <option value="0">Skin 0</option>
-        </select>
         <div class="tools">
           <label class="swatch" title="Brush color"><input type="color" id="color" value="#ff2d55"></label>
           <label class="size" title="Brush size">
@@ -163,6 +174,10 @@
           <button id="undo" class="btn btn-icon" title="Undo (Ctrl/Cmd+Z)" disabled>Undo</button>
           <button id="redo" class="btn btn-icon" title="Redo (Ctrl/Cmd+Y)" disabled>Redo</button>
           <span class="tool-sep"></span>
+          <select id="skinselect" title="Active skin"></select>
+          <button id="skinadd" class="btn btn-icon" title="Add a skin">+ Skin</button>
+          <button id="skinremove" class="btn btn-icon" title="Remove active skin">- Skin</button>
+          <span class="tool-sep"></span>
           <button id="reset" class="btn btn-icon" title="Restore the original skin, discarding unsaved edits" disabled>Reset skin</button>
         </div>
         <span id="editpath" class="editpath"></span>
@@ -171,7 +186,14 @@
     </section>
 
     <section id="right" class="pane">
-      <div class="pane-head"><span class="pane-title">Model</span></div>
+      <div class="pane-head">
+        <span class="pane-title">Model</span>
+        <div class="tools">
+          <button id="animplay" class="btn btn-icon toggle" aria-pressed="false">Play</button>
+          <input id="animframe" type="range" min="0" max="0" value="0" style="width:140px">
+          <output id="animlabel" class="chip">frame 0/0</output>
+        </div>
+      </div>
       <div id="viewport"><div id="msg"></div><canvas id="canvas"></canvas></div>
     </section>
   </main>
