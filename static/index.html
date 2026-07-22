@@ -165,7 +165,13 @@
       <div class="pane-head">
         <span class="pane-title">Skin</span>
         <div class="tools">
+          <button id="tool-brush" class="btn btn-icon toggle" aria-pressed="true" title="Brush (B)">Brush</button>
+          <button id="tool-eraser" class="btn btn-icon toggle" aria-pressed="false" title="Eraser (E)">Eraser</button>
+          <button id="tool-fill" class="btn btn-icon toggle" aria-pressed="false" title="Fill (G)">Fill</button>
+          <button id="tool-pick" class="btn btn-icon toggle" aria-pressed="false" title="Eyedropper (I)">Pick</button>
+          <span class="tool-sep"></span>
           <label class="swatch" title="Brush color"><input type="color" id="color" value="#ff2d55"></label>
+          <label class="swatch" title="Eraser color"><input type="color" id="erasecolor" value="#ffffff"></label>
           <label class="size" title="Brush size">
             <input type="range" id="brushsize" min="1" max="64" value="6">
             <output id="brushval">6</output>

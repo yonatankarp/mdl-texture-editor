@@ -41,6 +41,10 @@ let paperImageName = "";
 // paint state
 let brushColor = document.getElementById("color").value;
 let brushSize = +document.getElementById("brushsize").value;
+let eraserColor = document.getElementById("erasecolor").value;
+const TOOLS = ["brush", "eraser", "fill", "pick"];
+let currentTool = "brush";
+let prevTool = "brush";  // tool to restore after a one-shot eyedropper pick
 let drawing = false, lastX = 0, lastY = 0;
 const undoStack = [], redoStack = [];
 const MAX_HISTORY = 30;
@@ -156,6 +160,18 @@ function persistSkin() {
   }).catch((e) => console.warn("skin-write failed", e));
 }
 
+function activeColor() {
+  return currentTool === "eraser" ? eraserColor : brushColor;
+}
+function setTool(tool) {
+  if (tool === "pick" && currentTool !== "pick") prevTool = currentTool;
+  currentTool = tool;
+  for (const t of TOOLS) {
+    document.getElementById("tool-" + t)
+      .setAttribute("aria-pressed", String(t === tool));
+  }
+}
+
 // --- painting ---
 function canvasXY(e) {
   const r = paint.getBoundingClientRect();
@@ -170,7 +186,7 @@ paint.addEventListener("pointerdown", (e) => {
   paint.setPointerCapture(e.pointerId);
   pushUndo();
   [lastX, lastY] = canvasXY(e);
-  pctx.fillStyle = brushColor;
+  pctx.fillStyle = activeColor();
   pctx.beginPath();
   pctx.arc(lastX, lastY, brushSize / 2, 0, Math.PI * 2);
   pctx.fill();
@@ -179,7 +195,7 @@ paint.addEventListener("pointerdown", (e) => {
 paint.addEventListener("pointermove", (e) => {
   if (!drawing) return;
   const [x, y] = canvasXY(e);
-  pctx.strokeStyle = brushColor;
+  pctx.strokeStyle = activeColor();
   pctx.lineWidth = brushSize;
   pctx.lineCap = "round";
   pctx.lineJoin = "round";
@@ -202,6 +218,10 @@ paint.addEventListener("pointercancel", endStroke);
 
 // toolbar + keyboard
 document.getElementById("color").addEventListener("input", (e) => { brushColor = e.target.value; });
+document.getElementById("erasecolor").addEventListener("input", (e) => { eraserColor = e.target.value; });
+for (const t of TOOLS) {
+  document.getElementById("tool-" + t).addEventListener("click", () => setTool(t));
+}
 document.getElementById("brushsize").addEventListener("input", (e) => {
   brushSize = +e.target.value;
   document.getElementById("brushval").textContent = brushSize;
@@ -209,10 +229,17 @@ document.getElementById("brushsize").addEventListener("input", (e) => {
 document.getElementById("undo").addEventListener("click", undo);
 document.getElementById("redo").addEventListener("click", redo);
 window.addEventListener("keydown", (e) => {
-  if (!(e.ctrlKey || e.metaKey)) return;
-  const k = e.key.toLowerCase();
-  if (k === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
-  else if (k === "y" || (k === "z" && e.shiftKey)) { e.preventDefault(); redo(); }
+  if (e.ctrlKey || e.metaKey) {
+    const k = e.key.toLowerCase();
+    if (k === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
+    else if (k === "y" || (k === "z" && e.shiftKey)) { e.preventDefault(); redo(); }
+    return;
+  }
+  if (e.altKey) return;
+  if (!editSkin) return;
+  const map = { b: "brush", e: "eraser", g: "fill", i: "pick" };
+  const tool = map[e.key.toLowerCase()];
+  if (tool) { e.preventDefault(); setTool(tool); }
 });
 
 function applyWire() {

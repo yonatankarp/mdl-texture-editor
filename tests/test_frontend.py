@@ -229,3 +229,34 @@ def test_animated_model_stands_upright(page, live_server_factory):
     # Bad2 is a humanoid: its tallest extent is its height. Standing => height
     # is along Y; lying on its side (the bug) => height is along Z.
     assert dy > dz and dy > dx, f"model not upright: extents dx={dx:.1f} dy={dy:.1f} dz={dz:.1f}"
+
+
+def select_tool(page, tool):
+    page.locator(f"#tool-{tool}").click()
+
+
+def active_tool(page):
+    for t in ("brush", "eraser", "fill", "pick"):
+        if page.locator(f"#tool-{t}").get_attribute("aria-pressed") == "true":
+            return t
+    return None
+
+
+def test_tool_selection_is_mutually_exclusive(page, live_server):
+    open_editor(page, live_server)
+    assert active_tool(page) == "brush", "brush is the default tool"
+
+    select_tool(page, "eraser")
+    assert active_tool(page) == "eraser"
+    assert page.locator("#tool-brush").get_attribute("aria-pressed") == "false"
+
+    select_tool(page, "fill")
+    assert active_tool(page) == "fill"
+
+    # keyboard shortcut B selects brush. The last-clicked tool button holds
+    # focus; letter keys don't activate buttons, so no extra focus step (and no
+    # canvas click that would trigger a fill once Task 3 lands).
+    page.keyboard.press("b")
+    assert active_tool(page) == "brush"
+    page.keyboard.press("e")
+    assert active_tool(page) == "eraser"
