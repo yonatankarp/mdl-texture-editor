@@ -270,3 +270,27 @@ def test_tool_shortcut_ignored_while_typing_in_text_field(page, live_server):
     page.keyboard.type("edge")  # contains 'e' (eraser) and 'g' (fill)
     assert page.locator("#path").input_value() == "edge", "keystrokes must reach the field"
     assert active_tool(page) == "brush", "tool must not change while typing in a text field"
+
+
+def set_color(page, input_id, hex_value):
+    page.evaluate(
+        "([id, v]) => { const el = document.getElementById(id);"
+        " el.value = v; el.dispatchEvent(new Event('input')); }",
+        [input_id, hex_value],
+    )
+
+
+def test_eraser_paints_secondary_color(page, live_server):
+    open_editor(page, live_server)
+    w, h = paint_dims(page)
+    cx, cy = w // 2, h // 2
+
+    set_color(page, "erasecolor", "#00ff00")
+    select_tool(page, "eraser")
+    set_brush_size(page, 10)
+    stroke_at(page, cx, cy)
+    assert pixel(page, cx, cy)[:3] == [0, 255, 0], "eraser paints its secondary color"
+
+    # one undo step: single undo fully reverts the eraser stroke
+    page.locator("#undo").click()
+    assert pixel(page, cx, cy)[:3] != [0, 255, 0]
