@@ -354,7 +354,12 @@ function showMsg(text) {
 
 function showEditPath(dir) {
   const el = document.getElementById("editpath");
-  if (el) el.textContent = dir ? "editing: " + dir : "";
+  if (!el) return;
+  // The element is direction:rtl so it ellipsizes from the left, keeping the
+  // filename (end of the path) visible; the "editing:" prefix anchors the
+  // string LTR so the path still renders in order. Full path in the tooltip.
+  el.textContent = dir ? "editing: " + dir : "";
+  el.title = dir || "";
 }
 
 function updateSkinUi() {
