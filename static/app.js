@@ -325,8 +325,17 @@ function applyAnimFrame(frameIdx) {
   const idx = Math.max(0, Math.min(frameIdx, animFrames.length - 1));
   const arr = animFrames[idx];
   const pos = mesh.geometry.getAttribute("position");
-  // Geometry shape is constant; only corner positions change per frame.
-  pos.array.set(arr);
+  // Frame positions come from the server in the model's native Z-up space. The
+  // initial geometry is baked into Three.js's Y-up world via geo.rotateX(-90),
+  // so each frame must get the SAME rotation here — otherwise writing the raw
+  // Z-up positions reverts the mesh to lying on its side. rotateX(-90) maps
+  // (x, y, z) -> (x, z, -y).
+  const out = pos.array;
+  for (let i = 0; i < arr.length; i += 3) {
+    out[i] = arr[i];
+    out[i + 1] = arr[i + 2];
+    out[i + 2] = -arr[i + 1];
+  }
   pos.needsUpdate = true;
   mesh.geometry.computeBoundingSphere();
   animFrame = idx;
@@ -384,6 +393,8 @@ async function load(path) {
     if (mat565) mat565.dispose();
   }
   mesh = new THREE.Mesh(geo, mat);
+  mesh.name = "model";
+  window.__model = mesh; // debug/test handle for inspecting the loaded model
   scene.add(mesh);
   frameCamera(geo);
   fullMat = mat;
