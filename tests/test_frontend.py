@@ -294,3 +294,46 @@ def test_eraser_paints_secondary_color(page, live_server):
     # one undo step: single undo fully reverts the eraser stroke
     page.locator("#undo").click()
     assert pixel(page, cx, cy)[:3] != [0, 255, 0]
+
+
+def click_at(page, cx, cy):
+    # A single click whose position maps to canvas pixel (cx, cy).
+    canvas = page.locator("#paint")
+    box = canvas.bounding_box()
+    w, h = paint_dims(page)
+    page.mouse.click(box["x"] + cx / w * box["width"], box["y"] + cy / h * box["height"])
+
+
+def test_flood_fill_fills_contiguous_region(page, live_server):
+    open_editor(page, live_server)
+    w, h = paint_dims(page)
+    cx, cy = w // 2, h // 2
+
+    # Make a solid brush-color blob, then flood it to a new color.
+    set_brush_size(page, 40)
+    stroke_at(page, cx, cy)
+    assert pixel(page, cx, cy)[:3] == BRUSH_RGB
+
+    set_color(page, "color", "#0000ff")
+    select_tool(page, "fill")
+    click_at(page, cx, cy)
+    assert pixel(page, cx, cy)[:3] == [0, 0, 255], "fill recolors the contiguous blob"
+
+    # one undo step reverts the fill back to the brush blob
+    page.locator("#undo").click()
+    assert pixel(page, cx, cy)[:3] == BRUSH_RGB
+
+
+def test_flood_fill_noop_when_same_color(page, live_server):
+    # Filling with the color already present adds no undo step.
+    open_editor(page, live_server)
+    w, h = paint_dims(page)
+    cx, cy = w // 2, h // 2
+
+    center = pixel(page, cx, cy)
+    hexc = "#{:02x}{:02x}{:02x}".format(*center[:3])
+    set_color(page, "color", hexc)
+    select_tool(page, "fill")
+    assert page.locator("#undo").is_disabled(), "sanity: no history yet"
+    click_at(page, cx, cy)
+    assert page.locator("#undo").is_disabled(), "no-op fill must not push an undo step"

@@ -172,6 +172,43 @@ function setTool(tool) {
   }
 }
 
+function hexToRgb(hex) {
+  return [
+    parseInt(hex.slice(1, 3), 16),
+    parseInt(hex.slice(3, 5), 16),
+    parseInt(hex.slice(5, 7), 16),
+  ];
+}
+
+// Iterative 4-connected flood fill of the exact-color region under (x, y) with
+// the primary brush color. Recursion would blow the JS stack on large skins, so
+// this uses an explicit coordinate stack. Snapshots for undo only when a change
+// will actually happen. Returns true if any pixel changed.
+function floodFill(x, y) {
+  const w = paint.width, h = paint.height;
+  if (x < 0 || y < 0 || x >= w || y >= h) return false;
+  const img = pctx.getImageData(0, 0, w, h);
+  const data = img.data;
+  const idx = (px, py) => (py * w + px) * 4;
+  const s = idx(x, y);
+  const tr = data[s], tg = data[s + 1], tb = data[s + 2], ta = data[s + 3];
+  const [fr, fg, fb] = hexToRgb(brushColor);
+  const fa = 255;
+  if (tr === fr && tg === fg && tb === fb && ta === fa) return false; // no-op guard
+  pushUndo();
+  const stack = [x, y]; // flat pairs to limit allocations
+  while (stack.length) {
+    const cy = stack.pop(), cx = stack.pop();
+    if (cx < 0 || cy < 0 || cx >= w || cy >= h) continue;
+    const i = idx(cx, cy);
+    if (data[i] !== tr || data[i + 1] !== tg || data[i + 2] !== tb || data[i + 3] !== ta) continue;
+    data[i] = fr; data[i + 1] = fg; data[i + 2] = fb; data[i + 3] = fa;
+    stack.push(cx + 1, cy, cx - 1, cy, cx, cy + 1, cx, cy - 1);
+  }
+  pctx.putImageData(img, 0, 0);
+  return true;
+}
+
 // --- painting ---
 function canvasXY(e) {
   const r = paint.getBoundingClientRect();
@@ -182,6 +219,11 @@ function canvasXY(e) {
 }
 paint.addEventListener("pointerdown", (e) => {
   if (!editSkin) return; // nothing loaded to edit yet
+  if (currentTool === "fill") {
+    const [fx, fy] = canvasXY(e);
+    if (floodFill(Math.floor(fx), Math.floor(fy))) afterEdit();
+    return;
+  }
   drawing = true;
   paint.setPointerCapture(e.pointerId);
   pushUndo();
