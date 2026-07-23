@@ -224,6 +224,18 @@ def do_import(mdl, indir, out=None):
             outb += struct.pack("<i", TYPE_565) + data
 
     outb += uv + rest
+
+    # Mesh edits (issue #22): the working dir may carry a vertex-delta map
+    # (decoded space, relative to the pristine backup). Apply it to the rebuilt
+    # bytes AFTER the skin re-embed: skin sizes can change above, shifting the
+    # frame offsets, so the deltas are applied by re-walking the new layout.
+    vfile = os.path.join(indir, "vertices.json")
+    if os.path.exists(vfile):
+        deltas = json.load(open(vfile)).get("deltas", {})
+        if deltas:
+            from mdl_geometry import apply_vertex_deltas
+            outb = bytearray(apply_vertex_deltas(bytes(outb), deltas))
+
     dst = out or mdl
     open(dst, "wb").write(outb)
     print(f"imported {numskins} {fmt} skins {old_w}x{old_h} -> {nw}x{nh} (as 565); wrote {dst} ({len(outb)} bytes)")

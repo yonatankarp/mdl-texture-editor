@@ -75,6 +75,14 @@ def _skin_rel_list(root, workdir):
     return [os.path.relpath(os.path.join(workdir, n), root) for n in _skin_files(workdir)]
 
 
+def _load_vertex_deltas(workdir):
+    try:
+        with open(os.path.join(workdir, "vertices.json")) as f:
+            return json.load(f).get("deltas", {})
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
 def _renumber_skin_files(workdir):
     names = _skin_files(workdir)
     for i, name in enumerate(names):
@@ -96,8 +104,14 @@ def create_app(root):
     def model():
         full = _resolve(root, request.args["path"])
         include_frames = request.args.get("includeFrames", "0") in ("1", "true", "True")
+        # Serve pristine geometry: once a backup exists the on-disk .MDL may
+        # already contain saved vertex edits, but the client's delta map is
+        # relative to the pristine positions (save = backup + deltas), so
+        # parsing the saved file would double-apply every delta.
+        bp = mdl_tool.backup_path(full)
+        src = bp if os.path.exists(bp) else full
         try:
-            return jsonify(parse_geometry(full, include_frames=include_frames))
+            return jsonify(parse_geometry(src, include_frames=include_frames))
         except ValueError as e:
             # Unsupported format (MDL2/MDL4) or a model this parser can't
             # decode (degenerate/placeholder). Report cleanly so the UI can
@@ -150,7 +164,16 @@ def create_app(root):
         # even after a reload. Paths are repo-relative, the same basis as
         # `skin`, so the frontend can feed them to skin-write/watch.
         skins = _skin_rel_list(root, workdir)
-        resp = {"skin": skins[0], "dir": workdir, "numskins": len(skins), "skins": skins}
+        resp = {
+            "skin": skins[0],
+            "dir": workdir,
+            "numskins": len(skins),
+            "skins": skins,
+            # Saved-but-unapplied mesh edits: the client re-applies these to
+            # the pristine geometry on load so the display matches what Save
+            # writes (save = pristine backup + deltas).
+            "vertexDeltas": _load_vertex_deltas(workdir),
+        }
         if reused:
             resp["reused"] = True
         return jsonify(resp)
@@ -177,6 +200,29 @@ def create_app(root):
         os.makedirs(os.path.dirname(full), exist_ok=True)
         with open(full, "wb") as f:
             f.write(base64.b64decode(raw))
+        return jsonify({"ok": True})
+
+    @app.post("/api/vertices-write")
+    def vertices_write():
+        # Persist the client's cumulative vertex-delta map (decoded space,
+        # relative to the pristine backup) into the model's working dir. Save
+        # applies it during the rebuild, same pipeline as the working skins.
+        body = request.get_json(force=True)
+        full = _resolve(root, body["path"])
+        workdir = _workdir(root, full)
+        if not os.path.isdir(workdir):
+            abort(400, "no working dir; load the model first")
+        deltas = body.get("deltas", {})
+        if not isinstance(deltas, dict):
+            abort(400, "deltas must be an object")
+        for vi, d in deltas.items():
+            if not (vi.lstrip("-").isdigit() and isinstance(d, list) and len(d) == 3
+                    and all(isinstance(v, (int, float)) for v in d)):
+                abort(400, f"bad delta entry {vi!r}")
+        tmp = os.path.join(workdir, "vertices.json.tmp")
+        with open(tmp, "w") as f:
+            json.dump({"deltas": deltas}, f, indent=2, sort_keys=True)
+        os.replace(tmp, os.path.join(workdir, "vertices.json"))
         return jsonify({"ok": True})
 
     @app.post("/api/skin-add")

@@ -53,7 +53,17 @@ sample models ship in `samples/`.
 A5 engine stores most textures, so you can preview the in-game color depth
 instead of the full-color PNG.
 
-`Wireframe` overlays the mesh edges.
+`Wireframe` overlays the mesh edges and shows vertex handles. Click a handle to
+select that vertex: a translate gizmo appears (arrows move along one axis,
+squares along a plane, the center in the screen plane), with a live delta
+readout and a `Reset vertex` button in the model pane header. Handles hidden
+behind the surface are dimmed and cannot be grabbed; the handle under the
+cursor highlights. `Esc` or clicking empty space deselects; dragging anywhere
+else still orbits the camera. Nudges apply the same offset to every animation
+frame, snap to the format's vertex quantization grid, and are clamped to the
+model's bounding box. They join the shared undo history and are written to the
+`.MDL` on `Save`. Models with a non-simple frame layout (grouped IDPO frames)
+are view-only.
 
 `Play` + frame slider preview animation frames from the loaded model.
 
@@ -111,6 +121,10 @@ editor:
 - **Non-destructive save loop.** Edits are still rooted in `_backup_mdl/`, so
   repeated saves keep rebuilding from the pristine original model rather than
   compounding binary deltas.
+- **Vertex nudging in Wireframe mode.** Small shape tweaks without an external
+  modeling tool: edits are stored as per-vertex deltas in the working dir
+  (`vertices.json`), applied to the pristine backup on save, shared across all
+  animation frames, and undoable alongside paint edits.
 
 ## Orientation
 

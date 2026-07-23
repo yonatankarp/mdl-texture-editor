@@ -323,3 +323,94 @@ def test_mtime_changed_detects_write(tmp_path):
     os_mtime = p.stat().st_mtime
     changed3, m3 = mtime_changed(str(p), m1)
     assert changed3 is True and m3 == os_mtime
+
+
+# --- vertex editing (issue #22) ---
+
+def _corner_of(g, vi):
+    return next(k for k, i in enumerate(g["vertexIndices"]) if i == vi)
+
+
+def _inward_delta(g, vi, k=3):
+    a, b, vmax = g["quant"]["a"], g["quant"]["b"], g["quant"]["max"]
+    c = _corner_of(g, vi)
+    d = []
+    for ax in range(3):
+        p = round((g["positions"][3 * c + ax] - b[ax]) / a[ax])
+        d.append((k if p < vmax / 2 else -k) * a[ax])
+    return d
+
+
+def test_vertices_write_persists_deltas_in_workdir(tmp_path):
+    c, model = edit_client(tmp_path, model="Paper2.MDL")
+    ex = c.post("/api/extract", json={"path": model}).get_json()
+    g = c.get("/api/model?path=" + model).get_json()
+    vi = g["vertexIndices"][0]
+    d = _inward_delta(g, vi)
+    r = c.post("/api/vertices-write", json={"path": model, "deltas": {str(vi): d}})
+    assert r.status_code == 200
+    vfile = tmp_path / os.path.dirname(ex["skin"]) / "vertices.json"
+    assert json.load(open(vfile)) == {"deltas": {str(vi): d}}
+
+
+def test_vertices_write_requires_extract(tmp_path):
+    c, model = edit_client(tmp_path, model="Paper2.MDL")
+    r = c.post("/api/vertices-write", json={"path": model, "deltas": {"0": [1, 0, 0]}})
+    assert r.status_code == 400
+
+
+def test_extract_reports_existing_vertex_deltas(tmp_path):
+    c, model = edit_client(tmp_path, model="Paper2.MDL")
+    first = c.post("/api/extract", json={"path": model}).get_json()
+    assert first["vertexDeltas"] == {}
+    g = c.get("/api/model?path=" + model).get_json()
+    vi = g["vertexIndices"][0]
+    d = _inward_delta(g, vi)
+    c.post("/api/vertices-write", json={"path": model, "deltas": {str(vi): d}})
+    again = c.post("/api/extract", json={"path": model}).get_json()
+    assert again.get("reused") is True
+    assert again["vertexDeltas"] == {str(vi): d}
+
+
+def test_save_applies_vertex_deltas_and_is_idempotent(tmp_path):
+    c, model = edit_client(tmp_path, model="Paper2.MDL")
+    c.post("/api/extract", json={"path": model})
+    g = c.get("/api/model?path=" + model).get_json()
+    vi = g["vertexIndices"][0]
+    corner = _corner_of(g, vi)
+    d = _inward_delta(g, vi)
+    c.post("/api/vertices-write", json={"path": model, "deltas": {str(vi): d}})
+    assert c.post("/api/save", json={"path": model}).status_code == 200
+    from mdl_geometry import parse_geometry
+    moved = parse_geometry(str(tmp_path / model))["positions"][3 * corner:3 * corner + 3]
+    for ax in range(3):
+        assert abs(moved[ax] - (g["positions"][3 * corner + ax] + d[ax])) < 1e-3
+    # a second save (e.g. after more painting) must not re-apply the delta
+    assert c.post("/api/save", json={"path": model}).status_code == 200
+    again = parse_geometry(str(tmp_path / model))["positions"][3 * corner:3 * corner + 3]
+    assert again == moved
+
+
+def test_model_endpoint_serves_pristine_geometry_after_save(tmp_path):
+    # /api/model must parse the pristine backup once one exists: the client's
+    # deltas are relative to pristine positions, so serving the saved (already
+    # moved) file would double-apply them.
+    c, model = edit_client(tmp_path, model="Paper2.MDL")
+    c.post("/api/extract", json={"path": model})
+    g = c.get("/api/model?path=" + model).get_json()
+    vi = g["vertexIndices"][0]
+    d = _inward_delta(g, vi)
+    c.post("/api/vertices-write", json={"path": model, "deltas": {str(vi): d}})
+    c.post("/api/save", json={"path": model})
+    assert c.get("/api/model?path=" + model).get_json()["positions"] == g["positions"]
+
+
+def test_save_with_bad_vertex_index_reports_error(tmp_path):
+    c, model = edit_client(tmp_path, model="Paper2.MDL")
+    c.post("/api/extract", json={"path": model})
+    g = c.get("/api/model?path=" + model).get_json()
+    c.post("/api/vertices-write",
+           json={"path": model, "deltas": {str(g["numverts"]): [1, 0, 0]}})
+    r = c.post("/api/save", json={"path": model})
+    assert r.status_code == 400
+    assert "out of range" in r.get_json()["error"]
