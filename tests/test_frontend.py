@@ -385,3 +385,186 @@ def test_tool_shortcut_ignored_mid_stroke(page, live_server):
     # after the stroke ends, the shortcut works again
     page.keyboard.press("e")
     assert active_tool(page) == "eraser", "shortcut works once the stroke ends"
+
+
+# --- vertex editing in Wireframe mode (issue #22) ---
+
+def enable_wireframe(page):
+    page.locator("#wire").click()
+
+
+def handles_state(page):
+    # [exists, visible] of the vertex-handle points cloud in the scene.
+    return page.evaluate(
+        "() => { const h = window.__model.parent.getObjectByName('vhandles');"
+        " return h ? [true, h.visible] : [false, false]; }"
+    )
+
+
+def model_positions(page):
+    return page.evaluate(
+        "() => Array.from(window.__model.geometry.getAttribute('position').array)"
+    )
+
+
+def vertex_index_map(page):
+    return page.evaluate("() => window.__model.userData.vertexIndices")
+
+
+def camera_position(page):
+    return page.evaluate("() => window.__camera.position.toArray()")
+
+
+def screen_pos_of_vertex(page, vi):
+    # Project the vertex's baked position through the camera onto the client
+    # rect of the 3D canvas. Uses the mesh's own Vector3 constructor so the
+    # eval needs no global THREE.
+    return page.evaluate(
+        "(vi) => {"
+        " const m = window.__model, cam = window.__camera;"
+        " const k = m.userData.vertexIndices.indexOf(vi);"
+        " const p = m.geometry.getAttribute('position');"
+        " const V = m.position.constructor;"
+        " const v = new V(p.getX(k), p.getY(k), p.getZ(k));"
+        " cam.updateMatrixWorld();"
+        " v.project(cam);"
+        " const r = document.getElementById('canvas').getBoundingClientRect();"
+        " return [r.left + (v.x + 1) / 2 * r.width,"
+        "         r.top + (1 - (v.y + 1) / 2) * r.height]; }",
+        vi,
+    )
+
+
+def drag(page, sx, sy, dx, dy):
+    page.mouse.move(sx, sy)
+    page.mouse.down()
+    for i in range(1, 6):
+        page.mouse.move(sx + dx * i / 5, sy + dy * i / 5)
+    page.mouse.up()
+
+
+def moved_vertices(before, after, vidx, tol=1e-4):
+    # Group per-corner deltas by MDL vertex; return {vi: True} for moved ones,
+    # asserting all corners of one vertex moved identically.
+    moved = {}
+    for k in range(len(vidx)):
+        d = tuple(after[3 * k + ax] - before[3 * k + ax] for ax in range(3))
+        if any(abs(x) > tol for x in d):
+            prev = moved.setdefault(vidx[k], d)
+            assert all(abs(prev[ax] - d[ax]) < tol for ax in range(3)), \
+                "corners of one vertex must move together"
+    return moved
+
+
+def do_vertex_drag(page, vi=None, dx=40, dy=0):
+    vidx = vertex_index_map(page)
+    vi = vidx[0] if vi is None else vi
+    before = model_positions(page)
+    sx, sy = screen_pos_of_vertex(page, vi)
+    drag(page, sx, sy, dx, dy)
+    after = model_positions(page)
+    return before, after, vidx
+
+
+def test_wireframe_toggle_shows_and_hides_vertex_handles(page, live_server):
+    open_editor(page, live_server)
+    assert handles_state(page)[1] is False, "no handles before Wireframe is on"
+    enable_wireframe(page)
+    assert handles_state(page) == [True, True]
+    page.locator("#wire").click()
+    assert handles_state(page)[1] is False
+
+
+def test_vertex_drag_moves_mesh_and_persists(page, live_server, tmp_path):
+    open_editor(page, live_server)
+    enable_wireframe(page)
+    cam_before = camera_position(page)
+    with page.expect_request("**/api/vertices-write") as info:
+        before, after, vidx = do_vertex_drag(page)
+    moved = moved_vertices(before, after, vidx)
+    assert len(moved) == 1, f"exactly one vertex should move, moved: {moved}"
+    assert camera_position(page) == cam_before, "vertex drag must not orbit the camera"
+
+    body = info.value.post_data_json
+    (vi_str, delta), = body["deltas"].items()
+    assert int(vi_str) in moved
+    vfiles = list(tmp_path.glob("_edit/*/vertices.json"))
+    assert vfiles, "vertices.json must be written to the working dir"
+    import json as _json
+    assert _json.load(open(vfiles[0]))["deltas"] == {vi_str: delta}
+
+
+def test_vertex_drag_undo_redo_restores_mesh(page, live_server):
+    open_editor(page, live_server)
+    enable_wireframe(page)
+    before, after, vidx = do_vertex_drag(page)
+    assert moved_vertices(before, after, vidx)
+    assert page.locator("#undo").is_enabled()
+
+    with page.expect_request("**/api/vertices-write") as info:
+        page.locator("#undo").click()
+    assert model_positions(page) == pytest.approx(before, abs=1e-4)
+    assert info.value.post_data_json["deltas"] == {}, "undo clears the persisted delta"
+
+    page.locator("#redo").click()
+    assert model_positions(page) == pytest.approx(after, abs=1e-4)
+
+
+def test_mixed_paint_and_vertex_undo_order(page, live_server):
+    open_editor(page, live_server)
+    w, h = paint_dims(page)
+    cx, cy = w // 2, h // 2
+    stroke_at(page, cx, cy)
+    assert pixel(page, cx, cy)[:3] == BRUSH_RGB
+
+    enable_wireframe(page)
+    before, after, vidx = do_vertex_drag(page)
+    assert moved_vertices(before, after, vidx)
+
+    page.keyboard.press("ControlOrMeta+z")  # undo vertex drag first (LIFO)
+    assert model_positions(page) == pytest.approx(before, abs=1e-4)
+    assert pixel(page, cx, cy)[:3] == BRUSH_RGB, "paint must survive the vertex undo"
+
+    page.keyboard.press("ControlOrMeta+z")  # then the paint stroke
+    assert pixel(page, cx, cy)[:3] != BRUSH_RGB
+    assert model_positions(page) == pytest.approx(before, abs=1e-4)
+
+
+def test_vertex_edit_survives_frame_switch(page, live_server_factory):
+    # Deltas apply to every animation frame; switching frames must not wipe the
+    # edit (applyAnimFrame rewrites the position attribute from frame data).
+    open_editor_with_model(page, live_server_factory("Paper2.MDL", "PipSid.MDL"), "PipSid.MDL")
+    enable_wireframe(page)
+    before, after, vidx = do_vertex_drag(page)
+    assert moved_vertices(before, after, vidx)
+
+    page.locator("#animframe").evaluate(
+        "(el) => { el.value = '3'; el.dispatchEvent(new Event('input')); }")
+    page.locator("#animframe").evaluate(
+        "(el) => { el.value = '0'; el.dispatchEvent(new Event('input')); }")
+    assert model_positions(page) == pytest.approx(after, abs=1e-4), \
+        "edit must persist across frame switches"
+
+
+def test_vertex_edit_survives_page_reload(page, live_server):
+    # Saved deltas are seeded from /api/extract on load and re-applied to the
+    # pristine geometry, so a reload shows exactly what Save would write.
+    open_editor(page, live_server)
+    enable_wireframe(page)
+    before, after, vidx = do_vertex_drag(page)
+    moved = moved_vertices(before, after, vidx)
+    assert moved
+
+    page.reload()
+    page.wait_for_selector("#reset:not([disabled])")
+    page.wait_for_function(
+        "(expected) => {"
+        " const m = window.__model;"
+        " if (!m) return false;"
+        " const p = m.geometry.getAttribute('position').array;"
+        " return Math.abs(p[0] - expected[0]) < 1e-3"
+        "     && Math.abs(p[1] - expected[1]) < 1e-3"
+        "     && Math.abs(p[2] - expected[2]) < 1e-3; }",
+        arg=after[:3],
+    )
+    assert model_positions(page) == pytest.approx(after, abs=1e-3)

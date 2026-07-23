@@ -1,12 +1,28 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { createMeshEditor } from "./meshedit.js";
 
 const canvas = document.getElementById("canvas");
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x333333);
 const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 5000);
+window.__camera = camera; // debug/test handle, like window.__model
 const controls = new OrbitControls(camera, canvas);
+
+// Vertex editing in Wireframe mode (issue #22). Callbacks reference functions
+// declared below (hoisted); they only run on user gestures after load.
+const meshEditor = createMeshEditor({
+  scene, camera, canvas, controls,
+  onDragStart: () => {
+    if (animPlaying) {
+      animPlaying = false;
+      updateAnimUi();
+    }
+  },
+  onCommit: (entry) => pushHistory({ kind: "vertex", ...entry }),
+  persist: () => persistVertices(),
+});
 
 // Left pane is a paint surface. The 3D model is textured directly from this
 // canvas (a CanvasTexture), so brush strokes appear on the model instantly;
@@ -120,25 +136,47 @@ function updateHistoryButtons() {
   document.getElementById("undo").disabled = undoStack.length === 0;
   document.getElementById("redo").disabled = redoStack.length === 0;
 }
+// One unified history: paint entries carry the pre-edit canvas snapshot,
+// vertex entries carry the vertex's delta before/after the drag. A single
+// Ctrl+Z therefore undoes whatever the user did last, regardless of kind.
 function pushUndo() {
-  undoStack.push(snapshot());
+  pushHistory({ kind: "paint", img: snapshot() });
+}
+function pushHistory(entry) {
+  undoStack.push(entry);
   if (undoStack.length > MAX_HISTORY) undoStack.shift();
   redoStack.length = 0;
   updateHistoryButtons();
 }
 function undo() {
   if (!undoStack.length) return;
-  redoStack.push(snapshot());
-  pctx.putImageData(undoStack.pop(), 0, 0);
-  afterEdit();
+  const entry = undoStack.pop();
+  if (entry.kind === "paint") {
+    redoStack.push({ kind: "paint", img: snapshot() });
+    pctx.putImageData(entry.img, 0, 0);
+    afterEdit();
+  } else {
+    redoStack.push(entry);
+    applyVertexHistory(entry.vi, entry.prev);
+  }
   updateHistoryButtons();
 }
 function redo() {
   if (!redoStack.length) return;
-  undoStack.push(snapshot());
-  pctx.putImageData(redoStack.pop(), 0, 0);
-  afterEdit();
+  const entry = redoStack.pop();
+  if (entry.kind === "paint") {
+    undoStack.push({ kind: "paint", img: snapshot() });
+    pctx.putImageData(entry.img, 0, 0);
+    afterEdit();
+  } else {
+    undoStack.push(entry);
+    applyVertexHistory(entry.vi, entry.next);
+  }
   updateHistoryButtons();
+}
+function applyVertexHistory(vi, delta) {
+  meshEditor.setDelta(vi, delta);
+  persistVertices();
 }
 // Refresh the model textures and persist after a committed change.
 function afterEdit() {
@@ -158,6 +196,17 @@ function persistSkin() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ file: editSkin, png: paint.toDataURL("image/png") }),
   }).catch((e) => console.warn("skin-write failed", e));
+}
+
+// Persist the cumulative vertex-delta map to the working dir; Save applies it
+// to the .MDL during the rebuild (backup + deltas), like the working skins.
+function persistVertices() {
+  if (!currentPath) return;
+  fetch("/api/vertices-write", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: currentPath, deltas: meshEditor.getDeltasObject() }),
+  }).catch((e) => console.warn("vertices-write failed", e));
 }
 
 function activeColor() {
@@ -317,6 +366,7 @@ function applyWire() {
     wm.name = "uvwire";
     scene.add(wm);
   }
+  meshEditor.setWire(wire);
 }
 
 function resize() {
@@ -424,14 +474,21 @@ function applyAnimFrame(frameIdx) {
   // Z-up positions reverts the mesh to lying on its side. rotateX(-90) maps
   // (x, y, z) -> (x, z, -y).
   const out = pos.array;
-  for (let i = 0; i < arr.length; i += 3) {
-    out[i] = arr[i];
-    out[i + 1] = arr[i + 2];
-    out[i + 2] = -arr[i + 1];
+  for (let i = 0, c = 0; i < arr.length; i += 3, c++) {
+    // Frames stay pristine in memory; vertex edits (same delta every frame,
+    // per the issue #22 decision) are added here, before the bake.
+    const d = meshEditor.deltaForCorner(c);
+    const x = d ? arr[i] + d[0] : arr[i];
+    const y = d ? arr[i + 1] + d[1] : arr[i + 1];
+    const z = d ? arr[i + 2] + d[2] : arr[i + 2];
+    out[i] = x;
+    out[i + 1] = z;
+    out[i + 2] = -y;
   }
   pos.needsUpdate = true;
   mesh.geometry.computeBoundingSphere();
   animFrame = idx;
+  meshEditor.refreshHandles(); // handle positions are per-frame (pristine + delta)
   updateAnimUi();
 }
 
@@ -487,12 +544,20 @@ async function load(path) {
   }
   mesh = new THREE.Mesh(geo, mat);
   mesh.name = "model";
+  mesh.userData.vertexIndices = g.vertexIndices || [];
   window.__model = mesh; // debug/test handle for inspecting the loaded model
   scene.add(mesh);
   frameCamera(geo);
   fullMat = mat;
   mat565 = q;
   mesh.material = mode565 ? mat565 : fullMat;
+  meshEditor.setModel({
+    mesh,
+    vertexIndices: g.vertexIndices || [],
+    quant: g.quant,
+    editable: !!g.quant && !g.framesGrouped,
+    getFrame: () => animFrames[animFrame],
+  });
   applyWire();
   animFrames = Array.isArray(g.frames) && g.frames.length ? g.frames : [g.positions];
   animPlaying = false;
@@ -521,6 +586,10 @@ async function load(path) {
       editDir = ex.dir;
       setActiveSkin(0, true);
       showEditPath(editDir);
+      // Working dir is ready: seed saved-but-unapplied mesh edits and arm
+      // editing. applyAnimFrame re-applies them to the displayed mesh.
+      meshEditor.setDeltas(ex.vertexDeltas || {});
+      applyAnimFrame(animFrame);
     } else {
       editSkin = editDir = null;
       skinFiles = [];
@@ -583,6 +652,9 @@ document.getElementById("wire").onclick = (e) => {
   wire = !wire;
   applyWire();
   e.currentTarget.setAttribute("aria-pressed", String(wire));
+  if (wire && mesh && !meshEditor.isEditable()) {
+    showMsg("Mesh editing is unavailable for this model (non-simple frame layout).");
+  }
 };
 
 document.getElementById("animplay").onclick = (e) => {
