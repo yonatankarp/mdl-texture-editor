@@ -53,12 +53,17 @@ sample models ship in `samples/`.
 A5 engine stores most textures, so you can preview the in-game color depth
 instead of the full-color PNG.
 
-`Wireframe` overlays the mesh edges and shows draggable vertex handles: grab a
-handle to nudge that vertex (dragging elsewhere still orbits the camera). Nudges
-apply the same offset to every animation frame, snap to the format's vertex
-quantization grid, and are clamped to the model's bounding box. They join the
-shared undo history and are written to the `.MDL` on `Save`. Models with a
-non-simple frame layout (grouped IDPO frames) are view-only.
+`Wireframe` overlays the mesh edges and shows vertex handles. Click a handle to
+select that vertex: a translate gizmo appears (arrows move along one axis,
+squares along a plane, the center in the screen plane), with a live delta
+readout and a `Reset vertex` button in the model pane header. Handles hidden
+behind the surface are dimmed and cannot be grabbed; the handle under the
+cursor highlights. `Esc` or clicking empty space deselects; dragging anywhere
+else still orbits the camera. Nudges apply the same offset to every animation
+frame, snap to the format's vertex quantization grid, and are clamped to the
+model's bounding box. They join the shared undo history and are written to the
+`.MDL` on `Save`. Models with a non-simple frame layout (grouped IDPO frames)
+are view-only.
 
 `Play` + frame slider preview animation frames from the loaded model.
 

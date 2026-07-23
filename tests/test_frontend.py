@@ -456,14 +456,115 @@ def moved_vertices(before, after, vidx, tol=1e-4):
     return moved
 
 
-def do_vertex_drag(page, vi=None, dx=40, dy=0):
-    vidx = vertex_index_map(page)
-    vi = vidx[0] if vi is None else vi
-    before = model_positions(page)
+def scene_obj_visible(page, name):
+    return page.evaluate(
+        "(n) => { const o = window.__model.parent.getObjectByName(n);"
+        " return o ? o.visible : null; }", name)
+
+
+def select_vertex(page, vi):
+    # Click the vertex's handle; selection is confirmed by the gizmo showing.
     sx, sy = screen_pos_of_vertex(page, vi)
-    drag(page, sx, sy, dx, dy)
-    after = model_positions(page)
-    return before, after, vidx
+    page.mouse.click(sx, sy)
+    page.wait_for_function(
+        "() => { const g = window.__model.parent.getObjectByName('vgizmo');"
+        " return !!(g && g.visible); }")
+
+
+def gizmo_x_grab_point(page):
+    # Projected center of the gizmo's visible X-arrow mesh: a guaranteed spot
+    # inside the (fatter) X picker.
+    return page.evaluate(
+        "() => {"
+        " const scene = window.__model.parent, cam = window.__camera;"
+        " const g = scene.getObjectByName('vgizmo');"
+        " let mesh = null;"
+        " g.traverse((o) => { if (!mesh && o.name === 'X' && o.isMesh && o.visible) mesh = o; });"
+        " mesh.updateWorldMatrix(true, false);"
+        " if (!mesh.geometry.boundingSphere) mesh.geometry.computeBoundingSphere();"
+        " const c = mesh.geometry.boundingSphere.center.clone().applyMatrix4(mesh.matrixWorld);"
+        " cam.updateMatrixWorld();"
+        " c.project(cam);"
+        " const r = document.getElementById('canvas').getBoundingClientRect();"
+        " return [r.left + (c.x + 1) / 2 * r.width,"
+        "         r.top + (1 - (c.y + 1) / 2) * r.height]; }")
+
+
+def x_axis_screen_dir(page, vi, sign=1):
+    # Unit 2D direction of the world +X axis (times sign) at the vertex.
+    return page.evaluate(
+        "([vi, sign]) => {"
+        " const m = window.__model, cam = window.__camera;"
+        " const k = m.userData.vertexIndices.indexOf(vi);"
+        " const p = m.geometry.getAttribute('position');"
+        " const V = m.position.constructor;"
+        " const a = new V(p.getX(k), p.getY(k), p.getZ(k));"
+        " const b = a.clone(); b.x += sign;"
+        " cam.updateMatrixWorld();"
+        " a.project(cam); b.project(cam);"
+        " const r = document.getElementById('canvas').getBoundingClientRect();"
+        " const dx = (b.x - a.x) * r.width / 2, dy = -(b.y - a.y) * r.height / 2;"
+        " const len = Math.hypot(dx, dy) || 1;"
+        " return [dx / len, dy / len]; }",
+        [vi, sign])
+
+
+def gizmo_x_drag(page, vi, sign=1, px=45):
+    gx, gy = gizmo_x_grab_point(page)
+    dx, dy = x_axis_screen_dir(page, vi, sign)
+    drag(page, gx, gy, dx * px, dy * px)
+
+
+def pick_visible_vertex(page):
+    # A lit (non-occluded) vertex a real user could click: nearest to the
+    # camera among those with no closer handle within pick range on screen.
+    page.wait_for_function(
+        "() => { const h = window.__model.parent.getObjectByName('vhandles');"
+        " return !!(h && h.visible && h.geometry.getAttribute('color')); }")
+    page.wait_for_timeout(250)  # let the debounced occlusion pass land
+    vi = page.evaluate(
+        "() => {"
+        " const h = window.__model.parent.getObjectByName('vhandles');"
+        " const cam = window.__camera;"
+        " const col = h.geometry.getAttribute('color').array;"
+        " const pos = h.geometry.getAttribute('position');"
+        " const V = h.position.constructor;"
+        " const r = document.getElementById('canvas').getBoundingClientRect();"
+        " cam.updateMatrixWorld();"
+        " const pts = [];"
+        " for (let i = 0; i < pos.count; i++) {"
+        "   const w = new V(pos.getX(i), pos.getY(i), pos.getZ(i));"
+        "   const dist = w.distanceTo(cam.position);"
+        "   const v = w.project(cam);"
+        "   pts.push({ x: r.left + (v.x + 1) / 2 * r.width,"
+        "              y: r.top + (1 - (v.y + 1) / 2) * r.height,"
+        "              dim: col[3 * i] < 0.5, dist, vi: h.userData.vertices[i] });"
+        " }"
+        " const lit = pts.filter((p) => !p.dim).sort((a, b) => a.dist - b.dist);"
+        " for (const p of lit) {"
+        "   const clear = pts.every((q) => q === p || q.dist > p.dist ||"
+        "     Math.hypot(q.x - p.x, q.y - p.y) > 12);"
+        "   if (clear) return p.vi;"
+        " }"
+        " return lit.length ? lit[0].vi : null; }")
+    assert vi is not None, "no visible vertex found to click"
+    return vi
+
+
+def do_vertex_drag(page, vi=None, px=45):
+    # Select a visible vertex, then pull the gizmo's X arrow. Tries both
+    # directions: sample vertices legitimately sit at the bbox edge where one
+    # direction clamps to zero movement.
+    vidx = vertex_index_map(page)
+    vi = pick_visible_vertex(page) if vi is None else vi
+    before = model_positions(page)
+    select_vertex(page, vi)
+    for sign in (1, -1):
+        gizmo_x_drag(page, vi, sign, px)
+        after = model_positions(page)
+        if after != before:
+            return before, after, vidx
+    return before, model_positions(page), vidx
 
 
 def test_wireframe_toggle_shows_and_hides_vertex_handles(page, live_server):
@@ -568,3 +669,102 @@ def test_vertex_edit_survives_page_reload(page, live_server):
         arg=after[:3],
     )
     assert model_positions(page) == pytest.approx(after, abs=1e-3)
+
+
+def test_click_selects_vertex_and_esc_deselects(page, live_server):
+    open_editor(page, live_server)
+    enable_wireframe(page)
+    assert scene_obj_visible(page, "vgizmo") in (False, None)
+    assert page.locator("#vertexinfo").is_hidden()
+
+    select_vertex(page, vertex_index_map(page)[0])
+    assert scene_obj_visible(page, "vgizmo") is True
+    assert scene_obj_visible(page, "vselect") is True
+    assert page.locator("#vertexinfo").is_visible()
+    assert page.locator("#vertexreset").is_visible()
+
+    page.keyboard.press("Escape")
+    assert scene_obj_visible(page, "vgizmo") is False
+    assert scene_obj_visible(page, "vselect") is False
+    assert page.locator("#vertexinfo").is_hidden()
+
+
+def test_gizmo_x_drag_moves_a_single_decoded_axis(page, live_server):
+    open_editor(page, live_server)
+    enable_wireframe(page)
+    with page.expect_request("**/api/vertices-write") as info:
+        before, after, vidx = do_vertex_drag(page)
+    assert moved_vertices(before, after, vidx)
+    (vi_str, delta), = info.value.post_data_json["deltas"].items()
+    assert delta[0] != 0, "X-arrow drag must move decoded X"
+    assert delta[1] == 0 and delta[2] == 0, \
+        f"X-arrow drag must not leak into other axes: {delta}"
+
+
+def test_occluded_vertices_are_dimmed_and_not_selectable(page, live_server_factory):
+    open_editor_with_model(page, live_server_factory("Paper2.MDL", "PipSid.MDL"), "PipSid.MDL")
+    enable_wireframe(page)
+    # occlusion state is user-visible: dimmed entries in the handle color attr
+    page.wait_for_function(
+        "() => { const h = window.__model.parent.getObjectByName('vhandles');"
+        " if (!h || !h.geometry.getAttribute('color')) return false;"
+        " const c = h.geometry.getAttribute('color').array;"
+        " let dim = 0, lit = 0;"
+        " for (let i = 0; i < c.length; i += 3) (c[i] < 0.5 ? dim++ : lit++);"
+        " return dim > 0 && lit > 0; }")
+    # pick an occluded vertex whose screen position is clear of all lit ones
+    target = page.evaluate(
+        "() => {"
+        " const h = window.__model.parent.getObjectByName('vhandles');"
+        " const cam = window.__camera;"
+        " const col = h.geometry.getAttribute('color').array;"
+        " const pos = h.geometry.getAttribute('position');"
+        " const V = h.position.constructor;"
+        " const r = document.getElementById('canvas').getBoundingClientRect();"
+        " cam.updateMatrixWorld();"
+        " const pts = [];"
+        " for (let i = 0; i < pos.count; i++) {"
+        "   const v = new V(pos.getX(i), pos.getY(i), pos.getZ(i)).project(cam);"
+        "   pts.push({ x: r.left + (v.x + 1) / 2 * r.width,"
+        "              y: r.top + (1 - (v.y + 1) / 2) * r.height,"
+        "              dim: col[3 * i] < 0.5, vi: h.userData.vertices[i] });"
+        " }"
+        " for (const p of pts) {"
+        "   if (!p.dim) continue;"
+        "   const clear = pts.every((q) => q.dim ||"
+        "     Math.hypot(q.x - p.x, q.y - p.y) > 14);"
+        "   if (clear) return p;"
+        " }"
+        " return null; }")
+    assert target, "PipSid should have an occluded vertex clear of visible ones"
+    page.mouse.click(target["x"], target["y"])
+    page.wait_for_timeout(100)
+    assert scene_obj_visible(page, "vgizmo") is False, \
+        "clicking an occluded vertex must not select it"
+
+
+def test_hover_shows_pointer_cursor(page, live_server):
+    open_editor(page, live_server)
+    enable_wireframe(page)
+    sx, sy = screen_pos_of_vertex(page, pick_visible_vertex(page))
+    page.mouse.move(sx, sy)
+    assert page.evaluate("() => document.getElementById('canvas').style.cursor") == "pointer"
+    # the canvas corner is guaranteed background (the model is framed centered)
+    box = page.locator("#canvas").bounding_box()
+    page.mouse.move(box["x"] + 8, box["y"] + 8)
+    assert page.evaluate("() => document.getElementById('canvas').style.cursor") == ""
+
+
+def test_reset_vertex_button_zeroes_delta_and_is_undoable(page, live_server):
+    open_editor(page, live_server)
+    enable_wireframe(page)
+    before, after, vidx = do_vertex_drag(page)
+    assert moved_vertices(before, after, vidx)
+
+    with page.expect_request("**/api/vertices-write") as info:
+        page.locator("#vertexreset").click()
+    assert info.value.post_data_json["deltas"] == {}
+    assert model_positions(page) == pytest.approx(before, abs=1e-4)
+
+    page.keyboard.press("ControlOrMeta+z")  # reset is one undoable step
+    assert model_positions(page) == pytest.approx(after, abs=1e-4)

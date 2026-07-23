@@ -22,6 +22,24 @@ const meshEditor = createMeshEditor({
   },
   onCommit: (entry) => pushHistory({ kind: "vertex", ...entry }),
   persist: () => persistVertices(),
+  onSelectionChange: (vi, delta) => updateVertexInfo(vi, delta),
+});
+
+// Selected-vertex readout + per-vertex reset in the model pane header.
+function updateVertexInfo(vi, delta) {
+  const info = document.getElementById("vertexinfo");
+  const reset = document.getElementById("vertexreset");
+  const sep = document.getElementById("vertexsep");
+  const show = vi !== null;
+  info.hidden = reset.hidden = sep.hidden = !show;
+  if (show) {
+    const f = (v) => (Object.is(v, -0) ? 0 : +v.toFixed(2));
+    info.textContent = `v${vi}  Δ ${f(delta[0])}, ${f(delta[1])}, ${f(delta[2])}`;
+    reset.disabled = delta.every((v) => v === 0);
+  }
+}
+document.getElementById("vertexreset").addEventListener("click", () => {
+  meshEditor.resetSelected();
 });
 
 // Left pane is a paint surface. The 3D model is textured directly from this
