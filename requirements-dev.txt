@@ -2,4 +2,4 @@
 # Browser-driven frontend tests (tests/test_frontend.py, marker: frontend).
 # After install, fetch the browser once: python -m playwright install chromium
 pytest>=8.0
-pytest-playwright>=0.5.0
+pytest-playwright>=0.8.0
