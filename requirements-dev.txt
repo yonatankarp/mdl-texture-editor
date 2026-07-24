@@ -1,5 +1,5 @@
 # Dev/test-only dependencies. Runtime deps live in requirements.txt.
 # Browser-driven frontend tests (tests/test_frontend.py, marker: frontend).
 # After install, fetch the browser once: python -m playwright install chromium
-pytest>=8.0
+pytest>=9.1.1
 pytest-playwright>=0.8.0
