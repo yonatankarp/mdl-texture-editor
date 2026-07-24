@@ -17,8 +17,8 @@ import struct
 HDR = 84
 
 
-def parse_geometry(path, include_frames=False):
-    b = open(path, "rb").read()
+def parse_geometry(path, include_frames=False, data=None):
+    b = data if data is not None else open(path, "rb").read()
     magic = b[:4]
     if magic == b"IDPO":
         return _parse_idpo(b, include_frames=include_frames)
@@ -27,6 +27,102 @@ def parse_geometry(path, include_frames=False):
     raise ValueError(
         f"unsupported MDL format: magic={magic!r} (only IDPO, MDL3, MDL5)"
     )
+
+
+def apply_vertex_deltas(data, deltas):
+    """Return MDL bytes with per-vertex position deltas applied to EVERY frame.
+
+    deltas: {vertex_index: (dx, dy, dz)} in parse_geometry's output space.
+    Each delta is converted to packed integer steps via the header's
+    scale/trans affine (p_new = clamp(p_old + round(d / a), 0, max)), so
+    untouched vertices are never requantized. Applying to all frames keeps
+    animation coherent (issue #22 frame-handling decision).
+
+    Raises ValueError for grouped/non-simple frame layouts and out-of-range
+    vertex indices.
+    """
+    b = bytearray(data)
+    magic = bytes(b[:4])
+    if magic == b"IDPO":
+        _apply_deltas_idpo(b, deltas)
+    elif magic in (b"MDL5", b"MDL3"):
+        _apply_deltas_a5(b, magic, deltas)
+    else:
+        raise ValueError(f"unsupported MDL format: magic={magic!r}")
+    return bytes(b)
+
+
+def _int_steps(deltas, a, numverts):
+    """Convert decoded-space deltas to per-axis packed integer steps."""
+    steps = {}
+    for vi, d in deltas.items():
+        vi = int(vi)
+        if not 0 <= vi < numverts:
+            raise ValueError(f"vertex index {vi} out of range (numverts={numverts})")
+        s = tuple(round(d[ax] / a[ax]) for ax in range(3))
+        if any(s):
+            steps[vi] = s
+    return steps
+
+
+def _apply_deltas_idpo(b, deltas):
+    scale = struct.unpack_from("<3f", b, 8)
+    trans = struct.unpack_from("<3f", b, 20)
+    numskins, sw, sh, numverts, numtris, numframes = struct.unpack_from("<6i", b, 48)
+    off = HDR
+    for _ in range(numskins):
+        (t,) = struct.unpack_from("<i", b, off)
+        off += 4 + sw * sh * (2 if t == 2 else 1)
+    off += numverts * 12 + numtris * 16
+    if _idpo_frame_grouped(b, off, numverts, numframes):
+        raise ValueError("IDPO grouped frames are not editable")
+    steps = _int_steps(deltas, (scale[0], -scale[1], scale[2]), numverts)
+    for _ in range(numframes):
+        vbase = off + 4 + 4 + 4 + 16
+        for vi, s in steps.items():
+            for ax in range(3):
+                p = b[vbase + vi * 4 + ax] + s[ax]
+                b[vbase + vi * 4 + ax] = max(0, min(255, p))
+        off = vbase + numverts * 4
+
+
+def _apply_deltas_a5(b, magic, deltas):
+    scale = struct.unpack_from("<3f", b, 8)
+    numskins, sw, sh, numverts, numtris, numframes, num_stverts, _ = struct.unpack_from("<8i", b, 48)
+    geo = _a5_skin_block_end(b, magic, numskins, sw, sh)
+    off = geo + num_stverts * 4 + numtris * 12
+    if _a5_frames_grouped(b, off, numverts, numframes, magic):
+        raise ValueError(f"{magic.decode()} non-simple frame layout is not editable")
+    steps = _int_steps(deltas, scale, numverts)
+    vsz = 8 if magic == b"MDL5" else 4
+    vmax = 65535 if magic == b"MDL5" else 255
+    for _ in range(numframes):
+        vbase = off + 4 + 2 * vsz + 16
+        for vi, s in steps.items():
+            vo = vbase + vi * vsz
+            if magic == b"MDL5":
+                x, y, z = struct.unpack_from("<3H", b, vo)
+            else:
+                x, y, z = b[vo], b[vo + 1], b[vo + 2]
+            x = max(0, min(vmax, x + s[0]))
+            y = max(0, min(vmax, y + s[1]))
+            z = max(0, min(vmax, z + s[2]))
+            if magic == b"MDL5":
+                struct.pack_into("<3H", b, vo, x, y, z)
+            else:
+                b[vo], b[vo + 1], b[vo + 2] = x, y, z
+        off = vbase + numverts * vsz
+
+
+def _idpo_frame_grouped(b, off, numverts, numframes):
+    """Whether any IDPO frame record is a frame group (ftype != 0)."""
+    simple_sz = 4 + 4 + 16 + numverts * 4
+    for _ in range(numframes):
+        (ftype,) = struct.unpack_from("<i", b, off)
+        if ftype != 0:
+            return True
+        off += 4 + simple_sz
+    return False
 
 
 def _decode_idpo_frame(b, off, numverts, scale, trans):
@@ -97,8 +193,10 @@ def _parse_idpo(b, include_frames=False):
 
     positions = []
     uvs = []
+    vertex_indices = []
     for facesfront, a, bb, c in tris:
         for vi in (a, bb, c):
+            vertex_indices.append(vi)
             x, y, z = packed0[vi]
             positions.extend((x, y, z))
             onseam, s, t = stverts[vi]
@@ -115,10 +213,20 @@ def _parse_idpo(b, include_frames=False):
         "format": "IDPO",
         "numtris": numtris,
         "numframes": numframes,
+        "numverts": numverts,
         "skin_w": skin_w,
         "skin_h": skin_h,
         "positions": positions,
         "uvs": uvs,
+        "vertexIndices": vertex_indices,
+        # decoded = a * packed + b, packed in [0, max]. The Y components are
+        # negated to absorb the Quake LH -> RH conversion applied above.
+        "quant": {
+            "a": [scale[0], -scale[1], scale[2]],
+            "b": [trans[0], -trans[1], trans[2]],
+            "max": 255,
+        },
+        "framesGrouped": _idpo_frame_grouped(b, off, numverts, numframes),
     }
     if include_frames:
         out["frames"] = []
@@ -157,6 +265,19 @@ def _a5_skin_block_end(b, magic, numskins, sw, sh):
             raise ValueError(f"unsupported {magic.decode()} skin type {t}")
         off += w * h * bpp
     return off
+
+
+def _a5_frames_grouped(b, off, numverts, numframes, magic):
+    """Whether the A5 frame block deviates from the simple fixed-stride layout.
+
+    A5 ftype is NOT a group marker (real models carry ftype=2 with plain
+    simple-frame records), so the check is structural: the frame block must
+    fill the rest of the file at the simple stride exactly, otherwise vertex
+    offsets can't be trusted for write-back.
+    """
+    vsz = 8 if magic == b"MDL5" else 4
+    frame_sz = 4 + 2 * vsz + 16 + numverts * vsz
+    return off + numframes * frame_sz != len(b)
 
 
 def _decode_a5_frame_vertices(b, off, numverts, magic):
@@ -218,6 +339,7 @@ def _parse_a5(b, magic, include_frames=False):
 
     positions = []
     uvs = []
+    vertex_indices = []
     for tri in tris:
         xyz_idx = tri[0:3]
         st_idx = tri[3:6]
@@ -232,6 +354,7 @@ def _parse_a5(b, magic, include_frames=False):
                     f"{magic.decode()}: vertex index out of range "
                     f"(pos {vi}/{numverts}, skin {si}/{num_stverts})"
                 )
+            vertex_indices.append(vi)
             x, y, z = verts0[vi]
             positions.extend((
                 scale[0] * x + trans[0],
@@ -247,10 +370,21 @@ def _parse_a5(b, magic, include_frames=False):
         "format": magic.decode(),
         "numtris": numtris,
         "numframes": numframes,
+        "numverts": numverts,
         "skin_w": skin_w,
         "skin_h": skin_h,
         "positions": positions,
         "uvs": uvs,
+        "vertexIndices": vertex_indices,
+        # decoded = a * packed + b, packed in [0, max].
+        "quant": {
+            "a": list(scale),
+            "b": list(trans),
+            "max": 65535 if magic == b"MDL5" else 255,
+        },
+        "framesGrouped": _a5_frames_grouped(
+            b, tri_off + numtris * 12, numverts, numframes, magic
+        ),
     }
     if include_frames:
         out["frames"] = []

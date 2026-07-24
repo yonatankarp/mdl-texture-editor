@@ -124,7 +124,8 @@
 <script type="importmap">
 { "imports": {
   "three": "/static/vendor/three.module.js",
-  "three/addons/controls/OrbitControls.js": "/static/vendor/OrbitControls.js"
+  "three/addons/controls/OrbitControls.js": "/static/vendor/OrbitControls.js",
+  "three/addons/controls/TransformControls.js": "/static/vendor/TransformControls.js"
 }}
 </script>
 </head>
@@ -202,6 +203,10 @@
           <button id="animplay" class="btn btn-icon toggle" aria-pressed="false">Play</button>
           <input id="animframe" type="range" min="0" max="0" value="0" style="width:140px">
           <output id="animlabel" class="chip">frame 0/0</output>
+          <span class="tool-sep" id="vertexsep" hidden></span>
+          <span id="vertexinfo" class="chip" hidden></span>
+          <button id="vertexreset" class="btn btn-icon" hidden
+                  title="Reset this vertex to its original position">Reset vertex</button>
         </div>
       </div>
       <div id="viewport"><div id="msg"></div><canvas id="canvas"></canvas></div>
